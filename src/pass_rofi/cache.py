@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .models import ItemRef
 from .passcli import PassCli, PassCliError
@@ -74,21 +76,110 @@ def cache_age(path: Path, now: float | None = None) -> float | None:
         return None
 
 
-def match_host(refs: list[ItemRef], host: str) -> list[ItemRef]:
-    """Fuzzy host matching.
+def _host_of(url: str) -> str:
+    """Extract the lowercase host[:port] from a url, tolerating scheme-less."""
+    candidate = url.strip().lower()
+    if not candidate:
+        return ""
+    if "://" not in candidate:
+        candidate = "https://" + candidate
+    try:
+        host = urlsplit(candidate).hostname or ""
+    except ValueError:
+        return ""
+    try:
+        port = urlsplit(candidate).port
+    except ValueError:
+        port = None
+    return f"{host}:{port}" if port is not None else host
 
-    Matches an item if any of its urls contains the clipboard host as a
-    substring (case-insensitive), so `nc.honung.org` matches
-    `https://nc.honung.org`, `https://nc.honung.org/apps/dashboard/`,
-    `http://nc.honung.org:8080/x`, etc. Also matches the reverse direction
-    (an item url containing the clipboard's full host:port), and subdomain
-    relationships in both directions are intentionally not special-cased —
-    substring matching covers the common cases.
+
+def _title_matches(title: str, host: str) -> int:
+    """Bonus for the item title relating to the host. Compares with
+    punctuation/case stripped so 'NextCloud' matches 'nc.honung.org'
+    (initials 'nc' + product name 'cloud') and 'GitHub' matches
+    github.com."""
+    squashed_title = re.sub(r"[^a-z0-9]", "", title.lower())
+    bare = host.split(":")[0]
+    parts = [p for p in bare.split(".") if p]
+    candidates = []
+    if len(parts) >= 2:
+        candidates.append("".join(parts[:-1]))
+    if parts:
+        candidates.append(parts[0])
+    for candidate in candidates:
+        if not candidate:
+            continue
+        if squashed_title.startswith(candidate):
+            return 30
+        if candidate in squashed_title:
+            return 15
+    # CamelCase initials heuristic: the item title is a product name whose
+    # capital-letter initials are the first host label ('NextCloud' ->
+    # 'nc' for nc.honung.org). Also handles space-separated words
+    # ('Next Cloud').
+    if parts:
+        label = parts[0]
+        words = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", title)
+        if not words:
+            words = re.findall(r"[A-Za-z]+", title)
+        initials = "".join(w[0].lower() for w in words)
+        if len(label) >= 2 and initials.startswith(label):
+            return 15
+    return 0
+
+
+def _match_score(ref: ItemRef, host: str) -> int:
+    """Higher is a better match. -1 means no match.
+
+    Exact host equality beats subdomain matches, which beat host-contains,
+    which beat raw substring. Ties break toward: item title matches a host
+    label (so 'NextCloud' ranks for nc.honung.org), then fewer urls (a
+    more focused item), then title alphabetically for determinism.
+    """
+    best = -1
+    for url in ref.urls:
+        url_host = _host_of(url)
+        if not url_host:
+            continue
+        if url_host == host:
+            score = 100
+        elif url_host.startswith(host + ".") or url_host.endswith("." + host):
+            score = 80
+        elif host in url_host:
+            score = 60
+        elif host in url.lower():
+            score = 40
+        else:
+            continue
+        best = max(best, score)
+    if best < 0:
+        return -1
+    best += _title_matches(ref.title, host)
+    best += (9 - min(len(ref.urls), 9)) * 2
+    return best
+
+
+def match_host(refs: list[ItemRef], host: str) -> list[ItemRef]:
+    """Fuzzy host matching, best matches first.
+
+    Matches an item if any of its urls contains the clipboard host (case-
+    insensitive), so `nc.honung.org` matches `https://nc.honung.org`,
+    `https://nc.honung.org/apps/dashboard/`, `http://nc.honung.org:8080/x`,
+    etc. Results are sorted by match quality: exact host equality first
+    (e.g. an item whose url is exactly `https://nc.honung.org/` ranks above
+    one that merely contains the host among several urls).
     """
     host = host.lower().strip("/")
     if not host:
         return []
-    return [ref for ref in refs if any(host in url.lower() for url in ref.urls)]
+    scored = []
+    for ref in refs:
+        score = _match_score(ref, host)
+        if score >= 0:
+            scored.append((score, ref.title.lower(), ref))
+    scored.sort(key=lambda entry: (-entry[0], entry[1]))
+    return [ref for _score, _title, ref in scored]
 
 
 class Cache:

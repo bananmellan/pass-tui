@@ -24,9 +24,12 @@ split into small, testable modules.
 - If the clipboard contains an `http(s)://` URL (`wl-paste`, `xclip` or `xsel`),
   items whose cached urls contain the clipboard hostname (fuzzy: path, query,
   trailing slashes and case are ignored) are surfaced: a single match opens it
-  directly, multiple matches are listed, zero matches falls back to the full
-  list. URL matching only ever reads the cache, and runs on every launch while
-  the clipboard holds a URL.
+  directly, multiple matches are listed best-first, zero matches falls back to
+  the full list. URL matching only ever reads the cache, and runs on every
+  launch while the clipboard holds a URL. Match ranking: exact host equality
+  first, then subdomain, then host-contains; ties break toward titles that
+  name the host (including camelCase initials, so "NextCloud" ranks for
+  `nc.honung.org`), then items with fewer unrelated urls.
 - Going back to the item list (Ctrl+l, unknown selection, refresh row) renders
   straight from the cache and never blocks on `pass-cli`; a stale cache triggers
   a background rebuild instead.

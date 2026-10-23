@@ -197,3 +197,59 @@ def test_match_host_with_port():
 
 
 import pytest  # noqa: E402
+
+
+def test_match_host_ranks_exact_host_first():
+    """The user's case: clipboard nc.honung.org, two candidates —
+    'R2 Cloudflare' (single url https://nc.honung.org/) and 'NextCloud'
+    (three urls including nc.honung.org). NextCloud should rank first:
+    its title contains the host label and it has an exact-host url, while
+    R2's title doesn't mention it."""
+    refs = [
+        ref("s1", "i1", "R2 Cloudflare", ("https://nc.honung.org/",)),
+        ref(
+            "s1",
+            "i2",
+            "NextCloud",
+            ("https://nextcloud.com/", "https://nc.honung.org/", "https://nc.srv/"),
+        ),
+    ]
+    matches = match_host(refs, "nc.honung.org")
+    assert [r.title for r in matches] == ["NextCloud", "R2 Cloudflare"]
+
+
+def test_match_host_exact_host_beats_substring():
+    refs = [
+        ref("s1", "i1", "Substring", ("https://xnc.honung.org.evil.com",)),
+        ref("s1", "i2", "Exact", ("https://nc.honung.org",)),
+    ]
+    matches = match_host(refs, "nc.honung.org")
+    assert matches[0].title == "Exact"
+
+
+def test_match_host_subdomain_beats_contains():
+    refs = [
+        ref("s1", "i1", "Contains", ("https://notnc.honung.org.example.com",)),
+        ref("s1", "i2", "Sub", ("https://nc.honung.org",)),
+    ]
+    matches = match_host(refs, "honung.org")
+    assert matches[0].title == "Sub"
+
+
+def test_match_host_title_label_tiebreak():
+    refs = [
+        ref("s1", "i1", "Zebra", ("https://github.com",)),
+        ref("s1", "i2", "GitHub", ("https://github.com",)),
+    ]
+    matches = match_host(refs, "github.com")
+    assert matches[0].title == "GitHub"
+
+
+def test_match_host_deterministic_order():
+    refs = [
+        ref("s1", "i1", "Beta", ("https://github.com",)),
+        ref("s1", "i2", "Alpha", ("https://github.com",)),
+    ]
+    first = match_host(refs, "github.com")
+    second = match_host(list(reversed(refs)), "github.com")
+    assert [r.title for r in first] == [r.title for r in second] == ["Alpha", "Beta"]
