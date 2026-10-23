@@ -68,14 +68,36 @@ def _show_item_list(cache: Cache, state: StateStore, host_filter: str = "") -> N
         print("\n".join(rows))
 
 
-def _open_item(cache: Cache, state: StateStore, client: PassCli, ref: ItemRef) -> bool:
+def _open_item(
+    cache: Cache,
+    state: StateStore,
+    client: PassCli,
+    ref: ItemRef,
+    config: Config | None = None,
+) -> bool:
     try:
         data = client.view_item_with_retry(ref)
     except PassCliError as exc:
+        if config is not None:
+            _verbose(
+                config,
+                cache.path.parent,
+                f"view failed for {ref.title!r} ({ref.share_id}/{ref.item_id}): {exc}",
+            )
         _debug_log(cache.path.parent, f"view failed: {exc}")
         return False
     labels = field_labels(data)
     if not labels:
+        if config is not None:
+            _verbose(
+                config,
+                cache.path.parent,
+                f"no readable fields for {ref.title!r} — see debug.log",
+            )
+        _debug_log(
+            cache.path.parent,
+            f"no labels for item {ref.title!r} share={ref.share_id} item={ref.item_id}",
+        )
         return False
     state.set_stage(rofi_proto.STAGE_FIELDS)
     state.set_open_item(ref)
@@ -151,7 +173,7 @@ def _clipboard_matches(
         + ", ".join(f"{m.title} {list(m.urls)}" for m in matches[:10]),
     )
     if len(matches) == 1:
-        _open_item(cache, state, client, matches[0])
+        _open_item(cache, state, client, matches[0], config=config)
         return True
     if len(matches) > 1:
         state.set_stage(rofi_proto.STAGE_LIST)
@@ -186,7 +208,7 @@ def _initial(
             f"last copied item {last_ref.title!r} age={age}",
         )
         if age < config.reopen_seconds:
-            if _open_item(cache, state, client, last_ref):
+            if _open_item(cache, state, client, last_ref, config=config):
                 return
     else:
         _verbose(config, cache.path.parent, "no last-copied item")
@@ -244,11 +266,25 @@ def _on_select(
 
     if len(parts) == 3 and parts[0] == "item":
         refs = cache.load()
-        for ref in refs:
-            if ref.share_id == parts[1] and ref.item_id == parts[2]:
-                if _open_item(cache, state, client, ref):
-                    return
-                break
+        resolved = next(
+            (ref for ref in refs if ref.share_id == parts[1] and ref.item_id == parts[2]),
+            None,
+        )
+        if resolved is not None:
+            if _open_item(cache, state, client, resolved, config=config):
+                return
+            _verbose(
+                config,
+                cache.path.parent,
+                f"could not open cached item {resolved.title!r} — falling back to list",
+            )
+        else:
+            _verbose(
+                config,
+                cache.path.parent,
+                f"selected item not in cache (share={parts[1][:8]}… item={parts[2][:8]}…)"
+                f" — cache has {len(refs)} items; it may be stale",
+            )
         state.set_open_item(None)
         _show_item_list(cache, state)
         return
@@ -258,7 +294,7 @@ def _on_select(
         refs = [ref for ref in cache.load() if ref.title == stripped]
         if refs:
             for ref in refs:
-                if _open_item(cache, state, client, ref):
+                if _open_item(cache, state, client, ref, config=config):
                     return
     state.set_open_item(None)
     _show_item_list(cache, state)

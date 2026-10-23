@@ -739,3 +739,32 @@ def test_main_verbose_flag_sets_env(monkeypatch, tmp_path):
     assert captured["env"]["PASS_ROFI_VERBOSE"] == "1"
     assert cli_mod.main([]) == 0
     assert captured["env"].get("PASS_ROFI_VERBOSE") is None
+
+
+def test_open_item_with_only_extra_fields_shows_them(env, capsys, tmp_path):
+    """An item whose Login section is empty but which has extra_fields under
+    item.content (current pass-cli shape) must open and list those fields."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    view = json.dumps(
+        {
+            "item": {
+                "content": {
+                    "title": "GitHub",
+                    "note": "",
+                    "content": {"Login": {"username": "", "password": "", "urls": []}},
+                    "extra_fields": [
+                        {"name": "PIN", "content": {"Hidden": "0000"}},
+                    ],
+                }
+            }
+        }
+    )
+    client = FakeClient(view=view)
+    sep = "\x1f"
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO=f"item{sep}s1{sep}i1")
+    rc, out = run([f"item{sep}s1{sep}i1"], env2, capsys, client=client)
+    assert rc == 0
+    assert "field: PIN" in out
+    assert client.view_calls

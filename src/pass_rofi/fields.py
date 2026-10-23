@@ -26,6 +26,16 @@ def _content(data: dict) -> dict:
     return {}
 
 
+def _extra_fields(data: dict) -> list:
+    """Extra fields from either the top level or content (item view wraps
+    them under content in current pass-cli, older shapes put them top-level)."""
+    content = _content(data)
+    for candidate in (content.get("extra_fields"), data.get("extra_fields")):
+        if isinstance(candidate, list):
+            return candidate
+    return []
+
+
 def field_labels(data: dict) -> list[str]:
     """Ordered, de-duplicated labels of copyable fields for an item view JSON."""
     content = _content(data)
@@ -58,11 +68,9 @@ def field_labels(data: dict) -> list[str]:
                 urls.extend(u for u in candidates if isinstance(u, str) and u)
         for url in dict.fromkeys(urls):
             labels.append(f"url: {url}")
-    extra = data.get("extra_fields")
-    if isinstance(extra, list):
-        for field in extra:
-            if isinstance(field, dict) and field.get("name"):
-                labels.append(f"field: {field['name']}")
+    for field in _extra_fields(data):
+        if isinstance(field, dict) and field.get("name"):
+            labels.append(f"field: {field['name']}")
     return list(dict.fromkeys(labels))
 
 
@@ -75,18 +83,16 @@ def field_value(data: dict, label: str, totp: str = "") -> str:
         return label[len("url: "):]
     if label.startswith("field: "):
         name = label[len("field: "):]
-        extra = data.get("extra_fields")
-        if isinstance(extra, list):
-            for field in extra:
-                if not isinstance(field, dict) or field.get("name") != name:
-                    continue
-                value = field.get("content")
-                if isinstance(value, dict):
-                    for key in ("Hidden", "Text", "value"):
-                        if value.get(key):
-                            return str(value[key])
-                elif value:
-                    return str(value)
+        for field in _extra_fields(data):
+            if not isinstance(field, dict) or field.get("name") != name:
+                continue
+            value = field.get("content")
+            if isinstance(value, dict):
+                for key in ("Hidden", "Text", "value"):
+                    if value.get(key):
+                        return str(value[key])
+            elif value:
+                return str(value)
         return ""
     content = _content(data)
     inner = content.get("content")

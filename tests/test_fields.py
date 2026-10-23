@@ -78,3 +78,49 @@ def test_field_value_ignores_non_string_section_values():
     data["item"]["content"]["content"]["Login"]["passkeys"] = [{"id": "x"}]
     labels = field_labels(data)
     assert "passkeys" not in labels
+
+
+def test_field_labels_extra_fields_under_content():
+    """Current pass-cli puts extra_fields inside item.content, not top-level.
+    An item with only extra fields must still produce labels."""
+    data = {
+        "item": {
+            "content": {
+                "title": "Mors enheter",
+                "note": "",
+                "content": {
+                    "Login": {
+                        "email": "",
+                        "username": "",
+                        "password": "",
+                        "urls": [],
+                        "totp_uri": "",
+                        "passkeys": [],
+                        "autofill_urls": [],
+                    }
+                },
+                "extra_fields": [
+                    {"name": "iPhone & iPad PIN", "content": {"Hidden": "1111"}},
+                    {"name": "MacBook", "content": {"Hidden": "2222"}},
+                ],
+            }
+        }
+    }
+    labels = field_labels(data)
+    assert labels == ["field: iPhone & iPad PIN", "field: MacBook"]
+    assert field_value(data, "field: iPhone & iPad PIN") == "1111"
+    assert field_value(data, "field: MacBook") == "2222"
+
+
+def test_field_labels_empty_login_with_no_extra_fields_has_no_labels():
+    data = {
+        "item": {
+            "content": {
+                "title": "Empty",
+                "note": "",
+                "content": {"Login": {"username": "", "password": "", "urls": []}},
+                "extra_fields": [],
+            }
+        }
+    }
+    assert field_labels(data) == []
