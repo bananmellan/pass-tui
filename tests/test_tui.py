@@ -175,6 +175,44 @@ def test_draw_list_shows_items_and_prompt(tmp_path):
     assert win.refreshed == 1
 
 
+def test_draw_list_shows_type_badges(tmp_path):
+    from pass_tui.models import ItemRef
+
+    refs = [
+        ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login"),
+        ItemRef("s1", "i2", "actress_revolving098@smail.me", (), "Personal", "Alias"),
+        ItemRef("s1", "i3", "Bank note", (), "Personal", "Note"),
+        ItemRef("s1", "i4", "Visa", (), "Personal", "CreditCard"),
+        ItemRef("s1", "i5", "No type", (), "Personal", ""),
+    ]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "GitHub  ·  login" in text
+    assert "actress_revolving098@smail.me  ·  alias" in text
+    assert "Bank note  ·  note" in text
+    assert "Visa  ·  card" in text
+    # Unknown/empty type: no badge — the row shows only title, url, vault.
+    no_type_row = next(
+        line for line in text.splitlines() if line.startswith("No type")
+    )
+    assert no_type_row == "No type  ·  [Personal]"
+
+
+def test_draw_fields_header_shows_type_badge(tmp_path):
+    from pass_tui.models import ItemRef
+
+    refs = [ItemRef("s1", "i1", "actress_revolving098@smail.me", (), "Personal", "Alias")]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.handle_key("enter")
+    win = StubWindow()
+    tui._draw_fields(win, app)
+    assert "actress_revolving098@smail.me  ·  alias" in win.text()
+
+
 def test_draw_list_shows_host_filter_and_query(tmp_path):
     app = make_app(
         tmp_path,

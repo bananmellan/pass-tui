@@ -58,6 +58,54 @@ def test_search_text_contains_title_urls_vault():
     assert "Work" in text
 
 
+def test_search_by_type_badge_finds_aliases():
+    from pass_tui.models import ItemRef
+
+    refs = [
+        ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login"),
+        ItemRef("s1", "i2", "actress_revolving098@smail.me", (), "Personal", "Alias"),
+        ItemRef("s1", "i3", "other@smail.me", (), "Personal", "Alias"),
+    ]
+    assert [r.title for r in filter_items(refs, "alias")] == [
+        "actress_revolving098@smail.me",
+        "other@smail.me",
+    ]
+    assert [r.title for r in filter_items(refs, "login")] == ["GitHub"]
+
+
+def test_badge_match_ranks_aliases_above_title_contains():
+    """Typing "alias" must put the two alias items first, above a login
+    whose title merely contains the word "alias"."""
+    from pass_tui.models import ItemRef
+
+    refs = [
+        ItemRef("s1", "i1", "alias-generator login", ("https://example.com",), "Personal", "Login"),
+        ItemRef("s1", "i2", "x@smail.me", (), "Personal", "Alias"),
+        ItemRef("s1", "i3", "y@smail.me", (), "Personal", "Alias"),
+    ]
+    result = filter_items(refs, "alias")
+    assert [r.item_type for r in result] == ["Alias", "Alias", "Login"]
+
+
+def test_badge_match_still_allows_other_tokens():
+    """A query like "alias smail" matches aliases whose text contains both."""
+    from pass_tui.models import ItemRef
+
+    refs = [
+        ItemRef("s1", "i1", "x@smail.me", (), "Personal", "Alias"),
+        ItemRef("s1", "i2", "y@other.me", (), "Personal", "Alias"),
+        ItemRef("s1", "i3", "GitHub", ("https://github.com",), "Personal", "Login"),
+    ]
+    assert [r.title for r in filter_items(refs, "alias smail")] == ["x@smail.me"]
+
+
+def test_search_text_contains_badge():
+    from pass_tui.models import ItemRef
+
+    text = search_text(ItemRef("s1", "i1", "x@smail.me", (), "Personal", "Alias"))
+    assert "alias" in text
+
+
 def test_order_is_stable_within_rank():
     refs = [ref("s1", "i1", "Alpha git"), ref("s1", "i2", "Beta git"), ref("s1", "i3", "git")]
     result = filter_items(refs, "git")

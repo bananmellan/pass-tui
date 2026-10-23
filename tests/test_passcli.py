@@ -229,6 +229,36 @@ def test_parse_items_extracts_alias_address_from_prefix_suffix():
     assert "password" not in items[0].to_dict()
 
 
+def test_parse_items_summary_item_type_snake_case():
+    """The ItemSummary shape (item list without --show-secrets) carries a
+    snake_case item_type field, e.g. "credit_card", "ssh_key"."""
+    raw = {
+        "items": [
+            {"id": "i1", "share_id": "s1", "title": "Visa", "item_type": "credit_card", "state": "Active"},
+            {"id": "i2", "share_id": "s1", "title": "Key", "item_type": "ssh_key", "state": "Active"},
+            {"id": "i3", "share_id": "s1", "title": "Alias x", "item_type": "alias", "state": "Active"},
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert [i.item_type for i in items] == ["credit_card", "ssh_key", "alias"]
+
+
+def test_parse_items_badge_normalization_end_to_end():
+    """Every pass-cli ItemType spelling normalizes to a list badge."""
+    from pass_tui.types import type_badge
+
+    raw = {
+        "items": [
+            {"id": f"i{n}", "share_id": "s1", "title": t, "item_type": t, "state": "Active"}
+            for n, t in enumerate(["note", "login", "alias", "credit_card", "identity", "ssh_key", "wifi", "custom"])
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert [type_badge(i.item_type) for i in items] == [
+        "note", "login", "alias", "card", "identity", "ssh key", "wifi", "custom",
+    ]
+
+
 def test_parse_items_alias_with_precomposed_email_field():
     raw = {
         "items": [

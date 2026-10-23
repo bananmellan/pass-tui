@@ -9,7 +9,14 @@ into a self-contained curses application.)
 ## Features
 
 - Launching `pass-tui` opens a full-screen terminal list of items from **all
-  vaults**, sorted by title. **Search is live**: the list filters as you type.
+  vaults**, sorted by title. Every row shows the item's **type badge**
+  (`login`, `note`, `alias` for hide-my-email addresses, `card`, `identity`,
+  `ssh key`, `wifi`, `custom`), so aliases are never confused with logins.
+  The badge comes from pass-cli's `ItemContent` enum (`Login`/`Note`/`Alias`/
+  `CreditCard`/`Identity`/`SshKey`/`Wifi`/`Custom`, serialized externally
+  tagged as `content.content = {"Login": {...}}` etc.). Typing a badge name
+  (e.g. `alias`) filters to exactly that type, ranked first.
+  **Search is live**: the list filters as you type.
 - Items are listed from a local cache (`$XDG_CACHE_HOME/pass-tui/items.v1.json`)
   containing only **title, item id, share id, urls, vault name, item type and
   item uuid** — never passwords, notes or other field values. The rebuild runs
@@ -127,6 +134,7 @@ src/pass_tui/
   app.py                 UI-agnostic controller (screens + key handling)
   tui.py                 curses rendering and key translation
   search.py              live filtering (token substring/subsequence ranking)
+  types.py               item-type normalization and list badges
   passcli.py             pass-cli subprocess wrapper + JSON parsing
   cache.py               metadata cache (atomic, 0600, TTL, background refresh)
   state.py               last-copied / open-item state (one-shot reopen)

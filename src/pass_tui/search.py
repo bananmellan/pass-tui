@@ -15,6 +15,7 @@ is kept, so the list is stable while typing.
 from __future__ import annotations
 
 from .models import ItemRef
+from .types import type_badge
 
 
 def _is_subsequence(needle: str, haystack: str) -> bool:
@@ -23,10 +24,14 @@ def _is_subsequence(needle: str, haystack: str) -> bool:
 
 
 def search_text(ref: ItemRef) -> str:
-    """All searchable text for a ref: title first, then urls, then vault."""
+    """All searchable text for a ref: title first, then urls, then vault,
+    then the type badge (so typing "alias" lists all hide-my-email items)."""
     parts = [ref.title, *ref.urls]
     if ref.vault_name:
         parts.append(ref.vault_name)
+    badge = type_badge(ref.item_type)
+    if badge:
+        parts.append(badge)
     return " ".join(parts)
 
 
@@ -43,18 +48,24 @@ def _score(ref: ItemRef, query: str) -> int | None:
     """
     title = ref.title.lower()
     haystack = search_text(ref).lower()
+    badge = type_badge(ref.item_type)
     worst = -1
     for token in query.split():
         if not token:
             continue
-        if token in title:
+        if badge and token == badge:
+            # Exact badge match ("alias", "login", ...) ranks first, above
+            # even title matches, so typing "alias" surfaces exactly the
+            # hide-my-email items, not logins whose title contains the word.
             rank = 0
-        elif len(token) >= 3 and _is_subsequence(token, title):
+        elif token in title:
             rank = 1
-        elif token in haystack:
+        elif len(token) >= 3 and _is_subsequence(token, title):
             rank = 2
-        elif len(token) >= 3 and _is_subsequence(token, haystack):
+        elif token in haystack:
             rank = 3
+        elif len(token) >= 3 and _is_subsequence(token, haystack):
+            rank = 4
         else:
             return None
         worst = max(worst, rank)

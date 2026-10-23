@@ -11,6 +11,7 @@ from __future__ import annotations
 import curses
 
 from .app import App, FieldScreen, ListScreen, QuitRequested
+from .types import type_badge
 
 MAX_ROWS_FALLBACK = 20
 
@@ -84,7 +85,8 @@ def _draw_list(stdscr, app: App) -> None:
             attr = curses.A_REVERSE
         else:
             attr = curses.A_NORMAL
-        line = ref.title
+        badge = type_badge(ref.item_type)
+        line = f"{ref.title}  ·  {badge}" if badge else ref.title
         if ref.urls:
             line += f"  ·  {ref.urls[0]}"
         if ref.vault_name:
@@ -110,7 +112,11 @@ def _draw_fields(stdscr, app: App) -> None:
     app._clamp(screen, list_height)
 
     stdscr.erase()
-    title = screen.ref.title if screen.ref else ""
+    if screen.ref is not None:
+        badge = type_badge(screen.ref.item_type)
+        title = f"{screen.ref.title}  ·  {badge}" if badge else screen.ref.title
+    else:
+        title = ""
     stdscr.addnstr(0, 0, _truncate(title, width - 1), width - 1, curses.A_BOLD)
 
     prompt = f"> {screen.query}"
