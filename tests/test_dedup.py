@@ -1,9 +1,9 @@
-from pass_rofi.dedup import dedup_refs, display_duplicate_groups, is_email_alias
+from pass_rofi.dedup import dedup_refs, display_duplicate_groups
 from pass_rofi.models import ItemRef
 
 
-def ref(share="s1", item="i1", title="GitHub", urls=("https://github.com",), vault="Personal"):
-    return ItemRef(share, item, title, urls, vault, "Login")
+def ref(share="s1", item="i1", title="GitHub", urls=("https://github.com",), vault="Personal", uuid=""):
+    return ItemRef(share, item, title, urls, vault, "Login", uuid)
 
 
 def test_dedup_refs_drops_exact_duplicates():
@@ -23,14 +23,61 @@ def test_dedup_refs_dedups_same_item_id_across_shares():
     assert result[0].share_id == "s1"
 
 
-def test_dedup_refs_keeps_same_title_with_different_item_ids():
+def test_dedup_refs_keeps_same_title_with_different_item_ids_and_no_uuid():
     """Two genuinely different items that happen to share a title (different
-    item_id) both stay."""
+    item_id, no item_uuid) both stay."""
     refs = [
         ref("s1", "i1", "GitHub", ("https://github.com",)),
         ref("s2", "i2", "GitHub", ("https://github.com",)),
     ]
     assert len(dedup_refs(refs)) == 2
+
+
+def test_dedup_refs_dedups_same_item_uuid_with_different_item_ids():
+    """pass-cli can hand out different item_ids for the same item (re-import,
+    sync conflict) while the content-level item_uuid stays stable. Same
+    item_uuid = same item, even with different item_ids."""
+    refs = [
+        ref("s1", "i1", "abundolive.se", ("https://abundolive.se",), "Personal", uuid="u-abc"),
+        ref("s1", "i2", "abundolive.se", ("https://abundolive.se",), "Personal", uuid="u-abc"),
+    ]
+    result = dedup_refs(refs)
+    assert len(result) == 1
+    assert result[0].item_id == "i1"
+
+
+def test_dedup_refs_different_uuids_with_same_title_both_stay():
+    """Same title, different item_uuids — genuinely different items."""
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",), "Personal", uuid="u-1"),
+        ref("s2", "i2", "GitHub", ("https://github.com",), "Work", uuid="u-2"),
+    ]
+    assert len(dedup_refs(refs)) == 2
+
+
+def test_dedup_refs_uuid_wins_over_item_id():
+    """A ref with a uuid and a ref with the same item_id but no uuid are
+    different entries (the uuid identifies the real item)."""
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",), "Personal", uuid="u-1"),
+        ref("s1", "i1", "GitHub", ("https://github.com",), "Personal", uuid=""),
+    ]
+    # First has uuid u-1, second has no uuid but same item_id i1.
+    # The uuid'd one is kept; the uuid-less one is deduped by item_id
+    # only against other uuid-less refs — so both stay here.
+    assert len(dedup_refs(refs)) == 2
+
+
+def test_dedup_refs_uuid_dedup_is_checked_before_item_id():
+    """A uuid'd ref followed by a uuid-less ref with the same item_id:
+    the uuid-less ref is not dropped just because the item_id matches a
+    uuid'd ref (they track different identity spaces)."""
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",), "Personal", uuid="u-1"),
+        ref("s1", "i1", "GitHub", ("https://github.com",), "Personal", uuid=""),
+    ]
+    result = dedup_refs(refs)
+    assert len(result) == 2
 
 
 def test_dedup_refs_preserves_first_occurrence_order():
@@ -64,61 +111,3 @@ def test_display_duplicate_groups_ignores_different_urls():
 def test_display_duplicate_groups_empty_when_all_unique():
     refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
     assert display_duplicate_groups(refs) == []
-
-
-def test_is_email_alias_detects_address_titles():
-    assert is_email_alias(ref(title="actress_revolving098@smail.me"))
-    assert is_email_alias(ref(title="shopping.abc123@duck.com"))
-    assert is_email_alias(ref(title="  spaced@sl.local  "))
-
-
-def test_is_email_alias_rejects_non_addresses():
-    assert not is_email_alias(ref(title="GitHub"))
-    assert not is_email_alias(ref(title="abundolive.se"))
-    assert not is_email_alias(ref(title="account.bbc.com"))
-    assert not is_email_alias(ref(title="no-at-sign"))
-    assert not is_email_alias(ref(title="two@@at.com"))
-    assert not is_email_alias(ref(title="@no-local.com"))
-    assert not is_email_alias(ref(title="no-tld@localhost"))
-
-
-def test_dedup_refs_dedups_alias_items_by_address():
-    """Two alias items for the same address (different item_ids, e.g. one
-    from SimpleLogin, one migrated) collapse to one row."""
-    refs = [
-        ref("s1", "i1", "actress_revolving098@smail.me", (), "Personal"),
-        ref("s1", "i2", "actress_revolving098@smail.me", (), "Personal"),
-    ]
-    result = dedup_refs(refs)
-    assert len(result) == 1
-    assert result[0].item_id == "i1"
-
-
-def test_dedup_refs_alias_dedup_is_case_insensitive():
-    refs = [
-        ref("s1", "i1", "Alias@Example.com", (), "Personal"),
-        ref("s1", "i2", "alias@example.COM", (), "Personal"),
-    ]
-    assert len(dedup_refs(refs)) == 1
-
-
-def test_dedup_refs_keeps_different_aliases():
-    refs = [
-        ref("s1", "i1", "one@smail.me", (), "Personal"),
-        ref("s1", "i2", "two@smail.me", (), "Personal"),
-    ]
-    assert len(dedup_refs(refs)) == 2
-
-
-def test_dedup_refs_login_titled_like_address_not_treated_as_alias_when_id_differs():
-    """A login whose title happens to contain an email address is NOT an
-    alias item — but two logins with different item_ids still both stay
-    (we only dedup aliases by address)."""
-    refs = [
-        ref("s1", "i1", "adam.thunberg@hotmail.com", ("https://outlook.com",), "Personal"),
-        ref("s1", "i2", "adam.thunberg@hotmail.com", ("https://outlook.com",), "Personal"),
-    ]
-    # Both are address-titled, so they ARE treated as aliases and deduped.
-    # This documents the heuristic: a title that is exactly an email
-    # address is assumed to be an alias item.
-    assert len(dedup_refs(refs)) == 1

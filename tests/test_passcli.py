@@ -287,6 +287,54 @@ def test_parse_items_extracts_metadata_only():
     assert "secret" not in json.dumps(ref.to_dict())
 
 
+def test_parse_items_extracts_item_uuid():
+    """The content-level item_uuid is extracted — it is the stable identity
+    used for dedup when pass-cli hands out different item_ids for the
+    same item."""
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "content": {
+                    "title": "GitHub",
+                    "item_uuid": "u-abc-123",
+                    "content": {"Login": {"urls": []}},
+                },
+            },
+            {
+                "id": "i2",
+                "share_id": "s1",
+                "content": {
+                    "title": "NoUuid",
+                    "content": {"Note": {"note": "x"}},
+                },
+            },
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert items[0].item_uuid == "u-abc-123"
+    assert items[1].item_uuid == ""
+
+
+def test_parse_items_item_uuid_camelcase():
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "content": {
+                    "title": "GitHub",
+                    "itemUuid": "u-camel",
+                    "content": {"Login": {"urls": []}},
+                },
+            }
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert items[0].item_uuid == "u-camel"
+
+
 def test_parse_items_real_passcli_show_secrets_shape():
     """pass-cli item list --show-secrets --output json shape.
 
@@ -340,6 +388,7 @@ def test_parse_items_real_passcli_show_secrets_shape():
     assert ref.title == "GitHub"
     assert ref.urls == ("https://github.com", "https://gist.github.com")
     assert ref.item_type == "Login"
+    assert ref.item_uuid == "u1"
     assert "secret" not in json.dumps(ref.to_dict())
 
 

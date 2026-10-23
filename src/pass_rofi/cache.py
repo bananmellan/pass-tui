@@ -15,7 +15,7 @@ from .passcli import PassCli, PassCliError
 CACHE_VERSION = 1
 CACHE_NAME = "items.v1.json"
 
-_ALLOWED_KEYS = {"share_id", "item_id", "title", "urls", "vault_name", "item_type"}
+_ALLOWED_KEYS = {"share_id", "item_id", "title", "urls", "vault_name", "item_type", "item_uuid"}
 
 
 def _atomic_write(path: Path, data: bytes) -> None:

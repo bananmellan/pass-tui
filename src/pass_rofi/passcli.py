@@ -154,6 +154,7 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
             or (vault.name if vault else "")
         )
         share_id = share_id or ""
+        item_uuid = _scalar(content, "item_uuid", "itemUuid") or ""
         # The same item can appear more than once in a vault listing (e.g.
         # pass-cli re-emits it when the vault response is paginated oddly, or
         # a shared item shows up in two shares). Dedup on item_id — Proton
@@ -170,6 +171,7 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
                 urls=tuple(dict.fromkeys(_urls_from_entry(raw))),
                 vault_name=vault_name or "",
                 item_type=item_type,
+                item_uuid=item_uuid,
             )
         )
     return items

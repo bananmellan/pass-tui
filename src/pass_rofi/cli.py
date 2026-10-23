@@ -89,18 +89,23 @@ def _show_item_list(
         ordered = sort_refs(refs)
     if config is not None and config.verbose:
         id_counts: dict[str, int] = {}
+        uuid_counts: dict[str, int] = {}
         for ref in refs:
             id_counts[ref.item_id] = id_counts.get(ref.item_id, 0) + 1
+            if ref.item_uuid:
+                uuid_counts[ref.item_uuid] = uuid_counts.get(ref.item_uuid, 0) + 1
         dup_ids = {k: v for k, v in id_counts.items() if v > 1}
+        dup_uuids = {k: v for k, v in uuid_counts.items() if v > 1}
         _verbose(
             config,
             cache.path.parent,
             f"list: {len(refs)} cached items, {len(ordered)} rows printed"
-            + (f", {len(dup_ids)} item_ids appear more than once: {dict(list(dup_ids.items())[:5])}" if dup_ids else ", no repeated item_ids"),
+            + (f", {len(dup_ids)} item_ids appear more than once: {dict(list(dup_ids.items())[:5])}" if dup_ids else ", no repeated item_ids")
+            + (f", {len(dup_uuids)} item_uuids appear more than once: {dict(list(dup_uuids.items())[:5])}" if dup_uuids else ", no repeated item_uuids"),
         )
         for group in display_duplicate_groups(ordered):
             desc = ", ".join(
-                f"{ref.title!r} share={ref.share_id[:8]}… item={ref.item_id[:8]}… vault={ref.vault_name!r}"
+                f"{ref.title!r} share={ref.share_id[:8]}… item={ref.item_id[:8]}… uuid={ref.item_uuid[:8] or '-'}… vault={ref.vault_name!r}"
                 for ref in group
             )
             _verbose(config, cache.path.parent, f"list: visually identical rows: {desc}")

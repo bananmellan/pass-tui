@@ -17,6 +17,7 @@ class ItemRef:
     urls: tuple[str, ...] = field(default_factory=tuple)
     vault_name: str = ""
     item_type: str = ""
+    item_uuid: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -26,6 +27,7 @@ class ItemRef:
             "urls": list(self.urls),
             "vault_name": self.vault_name,
             "item_type": self.item_type,
+            "item_uuid": self.item_uuid,
         }
 
     @classmethod
@@ -50,4 +52,5 @@ class ItemRef:
             urls=urls,
             vault_name=str(raw.get("vault_name") or ""),
             item_type=str(raw.get("item_type") or ""),
+            item_uuid=str(raw.get("item_uuid") or ""),
         )

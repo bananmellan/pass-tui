@@ -157,6 +157,74 @@ def test_cache_contains_no_secrets(tmp_path):
     assert set(data) == {"version", "created_at", "items"}
 
 
+def test_load_cache_dedups_by_item_uuid(tmp_path):
+    """Two cache entries with the same item_uuid but different item_ids
+    (pass-cli handed out a new item_id for the same item) collapse to one."""
+    path = tmp_path / CACHE_NAME
+    payload = {
+        "version": 1,
+        "created_at": 0,
+        "items": [
+            {
+                "share_id": "s1",
+                "item_id": "i1",
+                "title": "abundolive.se",
+                "urls": ["https://abundolive.se"],
+                "vault_name": "Personal",
+                "item_type": "Login",
+                "item_uuid": "u-same",
+            },
+            {
+                "share_id": "s1",
+                "item_id": "i2",
+                "title": "abundolive.se",
+                "urls": ["https://abundolive.se"],
+                "vault_name": "Personal",
+                "item_type": "Login",
+                "item_uuid": "u-same",
+            },
+            {
+                "share_id": "s1",
+                "item_id": "i3",
+                "title": "Bank",
+                "urls": ["https://bank.example.com"],
+                "vault_name": "Personal",
+                "item_type": "Login",
+                "item_uuid": "u-other",
+            },
+        ],
+    }
+    path.write_text(json.dumps(payload))
+    loaded = load_cache(path)
+    assert [r.item_id for r in loaded] == ["i1", "i3"]
+
+
+def test_cache_allows_item_uuid_key(tmp_path):
+    """item_uuid is a known, non-secret metadata key and must be loaded."""
+    path = tmp_path / CACHE_NAME
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "items": [
+                    {
+                        "share_id": "s1",
+                        "item_id": "i1",
+                        "title": "GitHub",
+                        "urls": [],
+                        "vault_name": "",
+                        "item_type": "",
+                        "item_uuid": "u-1",
+                    }
+                ],
+            }
+        )
+    )
+    refs = load_cache(path)
+    assert len(refs) == 1
+    assert refs[0].item_uuid == "u-1"
+
+
 def test_load_rejects_foreign_keys(tmp_path):
     path = tmp_path / CACHE_NAME
     path.write_text(
