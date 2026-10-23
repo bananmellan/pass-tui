@@ -22,6 +22,12 @@ split into small, testable modules.
   items whose cached urls contain the clipboard hostname are surfaced: a single
   match opens it directly, multiple matches are listed, zero matches falls back
   to the full list. URL matching only ever reads the cache.
+- Rows are rendered with pango markup (bold title, dimmed url/vault) via the
+  script-mode `markup-rows` option. The row's *entry text* is an opaque token
+  (`item<US><share_id><US><item_id>`); the human-readable text is attached with
+  the row `display` property and the token is mirrored into `info`
+  (`ROFI_INFO`), so selection resolves the exact item even with duplicate
+  titles.
 - Selecting an item fetches its secrets on demand (`pass-cli item view`) and
   shows a field menu; selecting a field copies its value to the clipboard.
   TOTP codes are generated via `pass://<share>/<item>/totp`.

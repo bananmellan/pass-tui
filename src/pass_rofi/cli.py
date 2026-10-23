@@ -51,6 +51,7 @@ def _spawn_rebuild(config: Config) -> None:
 def _show_item_list(cache: Cache, state: StateStore, host_filter: str = "") -> None:
     refs = cache.get()
     state.set_stage(rofi_proto.STAGE_LIST)
+    print(rofi_proto.mode_option("markup-rows", "true"))
     print(rofi_proto.mode_option("prompt", "Proton Pass" if not host_filter else f"Proton Pass ({host_filter})"))
     print(REFRESH_ROW)
     rows = [item_row(ref) for ref in refs]
@@ -69,6 +70,7 @@ def _open_item(cache: Cache, state: StateStore, client: PassCli, ref: ItemRef) -
         return False
     state.set_stage(rofi_proto.STAGE_FIELDS)
     state.set_last_copied(ref)
+    print(rofi_proto.mode_option("markup-rows", "true"))
     print(rofi_proto.mode_option("prompt", ref.title))
     print("\n".join(field_row(label, label) for label in labels))
     return True
@@ -133,6 +135,7 @@ def _initial(
                 return
             if len(matches) > 1:
                 state.set_stage(rofi_proto.STAGE_LIST)
+                print(rofi_proto.mode_option("markup-rows", "true"))
                 print(rofi_proto.mode_option("prompt", f"Proton Pass ({host})"))
                 print("\n".join(item_row(ref) for ref in matches))
                 return
@@ -158,17 +161,14 @@ def _on_select(
         _show_item_list(cache, state)
         return
 
+    parts = parse_info(selected) or parse_info(info)
     if state.get_stage() == rofi_proto.STAGE_FIELDS:
-        parts = parse_info(selected) or (info,)
-        label = parts[0] if parts else selected
+        label = parts[0] if parts else selected.split("\x00", 1)[0]
         last = state.get_last_copied()
         if last is not None:
             _copy_field(state, client, clipboard, last, label)
         return
 
-    parts = parse_info(selected)
-    if parts == ("item",) or len(parts) != 3 or parts[0] != "item":
-        parts = parse_info(info)
     if len(parts) == 3 and parts[0] == "item":
         refs = cache.get()
         for ref in refs:
@@ -179,13 +179,13 @@ def _on_select(
         _show_item_list(cache, state)
         return
 
-    refs = [ref for ref in cache.get() if ref.title == selected]
-    if not refs:
-        _show_item_list(cache, state)
-        return
-    for ref in refs:
-        if _open_item(cache, state, client, ref):
-            return
+    if selected:
+        stripped = selected.split("\x00", 1)[0]
+        refs = [ref for ref in cache.get() if ref.title == stripped]
+        if refs:
+            for ref in refs:
+                if _open_item(cache, state, client, ref):
+                    return
     _show_item_list(cache, state)
 
 

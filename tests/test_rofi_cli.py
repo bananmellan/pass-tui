@@ -92,11 +92,14 @@ def test_initial_lists_cached_items_with_info(env, capsys, tmp_path):
     rc, out = run([], env, capsys)
     assert rc == 0
     lines = out.splitlines()
-    assert lines[0].startswith("\x00prompt\x1f")
+    assert "\x00markup-rows\x1ftrue" in lines[0]
+    assert any(line.startswith("\x00prompt\x1f") for line in lines)
     assert cli_mod.REFRESH_ROW in lines
-    assert any("GitHub" in line and "s1\x1f i1".replace(" ", "") or "GitHub" in line for line in lines)
-    assert any("Bank" in line for line in lines)
-    assert any("\x00info\x1fitem\x1f s1\x1f i1".replace(" ", "") or "\x00info\x1fitem\x1fs1\x1fi1" in line for line in lines)
+    item_lines = [line for line in lines if line.startswith("item\x1f")]
+    assert any("GitHub" in line for line in item_lines)
+    assert any("Bank" in line for line in item_lines)
+    assert any("\x00display\x1f" in line and "<b>GitHub</b>" in line for line in item_lines)
+    assert any("\x00info\x1fitem\x1fs1\x1fi1" in line for line in item_lines)
 
 
 def test_initial_rebuilds_when_cache_missing(env, capsys, monkeypatch):
@@ -184,6 +187,46 @@ def test_select_item_by_info_opens_fields(env, capsys):
     assert "secret" not in out
 
 
+def test_select_item_by_token_argv_opens_fields(env, capsys):
+    """rofi passes the entry text (the token) as argv[1]; ids come from ROFI_INFO."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
+    rc, out = run(["item\x1fs1\x1fi1"], env2, capsys, client=client)
+    assert rc == 0
+    assert client.view_calls and client.view_calls[0].item_id == "i1"
+    assert "username" in out
+
+
+def test_select_item_token_argv_without_info_opens_fields(env, capsys):
+    """Even if ROFI_INFO is missing, the token in argv[1] resolves the item."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+    env2 = dict(env, ROFI_RETV="1")
+    rc, out = run(["item\x1fs1\x1fi1"], env2, capsys, client=client)
+    assert rc == 0
+    assert client.view_calls and client.view_calls[0].item_id == "i1"
+
+
+def test_select_duplicate_titles_resolves_exact_item(env, capsys):
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache(
+        [ref(), ref("s2", "i2", "GitHub", ("https://github.com/other",), "Work")],
+        cache_dir / CACHE_NAME,
+    )
+    client = FakeClient()
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs2\x1fi2")
+    rc, out = run(["item\x1fs2\x1fi2"], env2, capsys, client=client)
+    assert rc == 0
+    assert client.view_calls[0].share_id == "s2"
+    assert client.view_calls[0].item_id == "i2"
+
+
 def test_select_field_copies_value(env, capsys):
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
@@ -191,9 +234,25 @@ def test_select_field_copies_value(env, capsys):
     client = FakeClient()
     clipboard = FakeClipboard()
     env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
-    run(["GitHub"], env2, capsys, client=client, clipboard=clipboard)
+    run(["item\x1fs1\x1fi1"], env2, capsys, client=client, clipboard=clipboard)
     capsys.readouterr()
     env3 = dict(env, ROFI_RETV="1", ROFI_INFO="password")
+    rc, out = run(["password"], env3, capsys, client=client, clipboard=clipboard)
+    assert rc == 0
+    assert clipboard.written == ["secret"]
+
+
+def test_select_field_bare_label_argv_copies_value(env, capsys):
+    """Field rows are plain labels as entry text; argv[1] carries the label."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+    clipboard = FakeClipboard()
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
+    run(["item\x1fs1\x1fi1"], env2, capsys, client=client, clipboard=clipboard)
+    capsys.readouterr()
+    env3 = dict(env, ROFI_RETV="1")
     rc, out = run(["password"], env3, capsys, client=client, clipboard=clipboard)
     assert rc == 0
     assert clipboard.written == ["secret"]

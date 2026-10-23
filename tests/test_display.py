@@ -17,11 +17,20 @@ def ref(**kwargs):
 
 def test_item_row_contains_title_url_vault_and_info():
     row = item_row(ref())
+    assert row.startswith("item\x1fs1\x1fi1\x00")
     assert "GitHub" in row
     assert "https://github.com" in row
     assert "[Personal]" in row
     parts = parse_info(row)
     assert parts == ("item", "s1", "i1")
+
+
+def test_item_row_display_is_pango_and_entry_is_token():
+    row = item_row(ref())
+    entry, _, rest = row.partition("\x00")
+    assert entry == "item\x1fs1\x1fi1"
+    assert "\x00display\x1f<b>GitHub</b>" in row
+    assert "\x00info\x1fitem\x1fs1\x1fi1" in row
 
 
 def test_item_row_escapes_markup():
@@ -38,7 +47,15 @@ def test_item_row_handles_missing_optional_fields():
 
 def test_field_row_roundtrip():
     row = field_row("url: https://example.com", "url: https://example.com")
-    assert parse_info(row) == ("url: https://example.com",)
+    entry, _, rest = row.partition("\x00")
+    assert entry == "url: https://example.com"
+    assert "\x00display\x1furl: https://example.com" in row
+    assert "\x00info\x1furl: https://example.com" in row
+
+
+def test_field_row_display_is_escaped():
+    row = field_row("<b>x</b>", "<b>x</b>")
+    assert "\x00display\x1f&lt;b&gt;x&lt;/b&gt;" in row
 
 
 def test_parse_info_without_info_returns_empty():
