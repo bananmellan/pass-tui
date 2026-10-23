@@ -30,21 +30,33 @@ def _run(argv: list[str], input_text: str | None = None) -> str:
 
 
 def extract_host(text: str) -> str:
-    """Return the lowercase host[:port] if text looks like an http(s) URL.
+    """Return the lowercase host[:port] if text looks like a URL or bare host.
 
-    The path is dropped so that `https://nc.honung.org/apps/dashboard/`
-    matches items whose urls contain `nc.honung.org` (see match_host).
+    Accepts full http(s) URLs and scheme-less hosts (some apps put bare
+    domains on the clipboard, e.g. `mistral.ai`). The path is dropped so
+    that `https://nc.honung.org/apps/dashboard/` matches items whose urls
+    contain `nc.honung.org` (see match_host).
     """
     text = text.strip()
-    if not (text.startswith("http://") or text.startswith("https://")):
+    if not text:
         return ""
+    candidate = text
+    if not (text.startswith("http://") or text.startswith("https://")):
+        # Scheme-less: only treat as a host if it looks like one — a single
+        # token containing a dot, no spaces, no path-like prefix.
+        first = text.splitlines()[0].strip() if text.splitlines() else ""
+        if not first or " " in first or "/" in first.split(".")[0]:
+            return ""
+        if "." not in first:
+            return ""
+        candidate = "https://" + first
     try:
-        host = urlsplit(text).hostname or ""
+        host = urlsplit(candidate).hostname or ""
     except ValueError:
         return ""
     host = host.lower()
     try:
-        port = urlsplit(text).port
+        port = urlsplit(candidate).port
     except ValueError:
         port = None
     if port is not None:

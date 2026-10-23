@@ -17,6 +17,16 @@ def test_extract_host_rejects_non_urls():
     assert extract_host("just some text") == ""
     assert extract_host("ftp://example.com") == ""
     assert extract_host("") == ""
+    assert extract_host("localhost") == ""
+    assert extract_host("two words.com") == ""
+
+
+def test_extract_host_accepts_scheme_less_host():
+    """Some apps put bare domains on the clipboard (e.g. `mistral.ai`)."""
+    assert extract_host("mistral.ai") == "mistral.ai"
+    assert extract_host("nc.honung.org/apps/dashboard/") == "nc.honung.org"
+    assert extract_host("Example.COM") == "example.com"
+    assert extract_host("sub.example.com:8443/x") == "sub.example.com:8443"
 
 
 def test_read_uses_wl_paste_first():
