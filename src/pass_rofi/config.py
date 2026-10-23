@@ -14,6 +14,7 @@ class Config:
     lock_seconds: int = 300
     retry_delay: float = 2.0
     debug: bool = False
+    verbose: bool = False
 
     @classmethod
     def from_env(cls, env) -> "Config":
@@ -28,4 +29,5 @@ class Config:
             reopen_seconds=int(env.get("PASS_ROFI_REOPEN_SECONDS", "20")),
             clear_seconds=int(env.get("PASS_ROFI_CLIPBOARD_CLEAR_SECONDS", "45")),
             debug=env.get("PASS_ROFI_DEBUG", "") == "1",
+            verbose=env.get("PASS_ROFI_VERBOSE", "") == "1",
         )

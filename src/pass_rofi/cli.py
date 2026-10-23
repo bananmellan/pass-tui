@@ -32,6 +32,14 @@ def _debug_log(cache_dir: Path, message: str) -> None:
         pass
 
 
+def _verbose(config: Config, cache_dir: Path, message: str) -> None:
+    """Verbose logging: stderr always (rofi captures it), debug.log on demand."""
+    if not config.verbose:
+        return
+    print(f"pass-rofi: {message}", file=sys.stderr)
+    _debug_log(cache_dir, f"verbose: {message}")
+
+
 def _spawn_rebuild(config: Config) -> None:
     env = dict(os.environ)
     env.pop("ROFI_RETV", None)
@@ -122,11 +130,26 @@ def _clipboard_matches(
     since the previous launch.
     """
     clip = clipboard.read()[:2048]
+    _verbose(config, cache.path.parent, f"clipboard read: {clip[:200]!r}")
     host = extract_host(clip)
+    _verbose(config, cache.path.parent, f"extracted host: {host!r}")
     if not host:
         return False
     cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
-    matches = match_host(cache.load(), host)
+    refs = cache.load()
+    with_urls = sum(1 for ref in refs if ref.urls)
+    _verbose(
+        config,
+        cache.path.parent,
+        f"cache: {len(refs)} items, {with_urls} with urls",
+    )
+    matches = match_host(refs, host)
+    _verbose(
+        config,
+        cache.path.parent,
+        f"host {host!r} matched {len(matches)} items: "
+        + ", ".join(f"{m.title} {list(m.urls)}" for m in matches[:10]),
+    )
     if len(matches) == 1:
         _open_item(cache, state, client, matches[0])
         return True
@@ -152,13 +175,21 @@ def _initial(
     last = state.get_last_copied()
     if last is not None:
         age = state.last_copy_age(now)
+        _verbose(
+            config,
+            cache.path.parent,
+            f"last copied item {last.title!r} age={age}",
+        )
         if age is not None and age < config.reopen_seconds:
             if _open_item(cache, state, client, last):
                 return
         state.clear_last_copied()
+    else:
+        _verbose(config, cache.path.parent, "no last-copied item")
 
     if _clipboard_matches(config, cache, state, client, clipboard):
         return
+    _verbose(config, cache.path.parent, "clipboard matching did not handle the launch")
 
     cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
     refs = cache.get()
@@ -239,13 +270,21 @@ def run_rofi_mode(
     cache = Cache(cache_dir / CACHE_NAME, client or PassCli(config.pass_cli_bin), ttl=config.cache_ttl)
     state = StateStore(cache_dir)
     client = client or PassCli(config.pass_cli_bin)
-    clipboard = clipboard or Clipboard()
+    clipboard = clipboard or Clipboard(
+        log=(lambda msg: _verbose(config, cache_dir, msg)) if config.verbose else None
+    )
 
     if config.debug:
         _debug_log(cache_dir, f"invoked argv={argv} env RETV={env.get('ROFI_RETV')}")
 
     retv = rofi_proto.retv_from_env(env)
+    _verbose(
+        config,
+        cache_dir,
+        f"invoked argv={argv} ROFI_RETV={retv} stage={state.get_stage()}",
+    )
     if rofi_proto.RETV_CUSTOM_KEY_BASE <= retv <= rofi_proto.RETV_CUSTOM_KEY_BASE + 18:
+        _verbose(config, cache_dir, "custom key: back to list")
         state.clear_last_copied()
         state.set_open_item(None)
         state.set_stage(rofi_proto.STAGE_LIST)
@@ -254,6 +293,7 @@ def run_rofi_mode(
         return 0
     if retv in (rofi_proto.RETV_SELECTED, rofi_proto.RETV_CUSTOM):
         selected = argv[0] if argv else ""
+        _verbose(config, cache_dir, f"selected: {selected[:120]!r}")
         _on_select(config, cache, state, client, clipboard, selected, rofi_proto.info_from_env(env))
         return 0
     _initial(config, cache, state, client, clipboard)
@@ -265,9 +305,23 @@ def run_rebuild(config: Config | None = None, env=None) -> int:
     cache_dir = Path(config.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache = Cache(cache_dir / CACHE_NAME, PassCli(config.pass_cli_bin), ttl=config.cache_ttl)
+    _verbose(config, cache_dir, "rebuild: start")
     try:
-        cache.rebuild()
+        refs = cache.rebuild()
+        with_urls = sum(1 for ref in refs if ref.urls)
+        _verbose(
+            config,
+            cache_dir,
+            f"rebuild: ok, {len(refs)} items, {with_urls} with urls",
+        )
+        for ref in refs[:20]:
+            _verbose(
+                config,
+                cache_dir,
+                f"rebuild item: title={ref.title!r} urls={list(ref.urls)} vault={ref.vault_name!r}",
+            )
     except PassCliError as exc:
+        _verbose(config, cache_dir, f"rebuild failed: {exc}")
         if config.debug:
             _debug_log(cache_dir, f"background rebuild failed: {exc}")
     try:
@@ -280,9 +334,17 @@ def run_rebuild(config: Config | None = None, env=None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pass-rofi-script")
     parser.add_argument("--rebuild", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="log decision points to stderr and the debug log",
+    )
     parser.add_argument("entry", nargs="?", default="")
     args = parser.parse_args(argv)
     env = os.environ
+    if args.verbose:
+        env = dict(env)
+        env["PASS_ROFI_VERBOSE"] = "1"
     if args.rebuild and "ROFI_RETV" not in env:
         return run_rebuild(env=env)
     return run_rofi_mode([a for a in (args.entry,) if a], env)

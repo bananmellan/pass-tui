@@ -21,7 +21,13 @@ switch $scheme
         set theme Arc
 end
 
-set -l args -normal-window -kb-custom-1 Ctrl+l -kb-mode-complete "" -modi "pass:$script" -show pass -theme-str "window { width: 720px; }"
+set -l verbose_args
+if contains -- --verbose $argv
+    set -x PASS_ROFI_VERBOSE 1
+    set verbose_args --verbose
+end
+
+set -l args -normal-window -kb-custom-1 Ctrl+l -kb-mode-complete "" -modi "pass:$script $verbose_args" -show pass -theme-str "window { width: 720px; }"
 
 if test -f /home/linuxbrew/.linuxbrew/share/rofi/themes/$theme.rasi
     exec rofi $args -theme $theme

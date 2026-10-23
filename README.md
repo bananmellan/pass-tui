@@ -92,8 +92,14 @@ Bind `pass-rofi` (or `bin/pass-rofi`) to a key in your window manager.
 | `PASS_ROFI_CACHE_TTL` | `600` | cache freshness in seconds |
 | `PASS_ROFI_REOPEN_SECONDS` | `20` | reopen last item's menu after a copy |
 | `PASS_ROFI_DEBUG` | unset | set to `1` to log to `debug.log` |
+| `PASS_ROFI_VERBOSE` | unset | set to `1` (or pass `--verbose`) to log decision points (clipboard content, extracted host, cache stats, match count) to stderr and `debug.log` |
 | `PASS_ROFI_ROFI` | `rofi` | rofi executable (launcher only) |
 | `PASS_ROFI_SCRIPT` | auto | override the script-mode backend path |
+
+Debugging: run `pass-rofi --verbose` (or `PASS_ROFI_VERBOSE=1 pass-rofi`) with a
+URL in the clipboard and watch stderr — or `tail -f
+$XDG_CACHE_HOME/pass-rofi/debug.log` — to see the clipboard text, the extracted
+host, how many cached items have urls, and how many matched.
 
 ## Security model
 

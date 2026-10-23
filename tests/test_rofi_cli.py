@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -72,8 +73,10 @@ def env(tmp_path):
     }
 
 
-def run(argv, env, capsys, client=None, clipboard=None):
+def run_full(argv, env, capsys, client=None, clipboard=None):
     config = Config.from_env(env)
+    if clipboard is not None and config.verbose and getattr(clipboard, "_log", None) is None:
+        clipboard._log = lambda msg: cli_mod._verbose(config, Path(config.cache_dir), msg)
     rc = cli_mod.run_rofi_mode(
         argv,
         env,
@@ -81,7 +84,12 @@ def run(argv, env, capsys, client=None, clipboard=None):
         client=client or FakeClient(),
         clipboard=clipboard or FakeClipboard(),
     )
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    return rc, captured.out, captured.err
+
+
+def run(argv, env, capsys, client=None, clipboard=None):
+    rc, out, _err = run_full(argv, env, capsys, client=client, clipboard=clipboard)
     return rc, out
 
 
@@ -636,3 +644,63 @@ def test_run_rebuild_writes_cache(env, monkeypatch):
     refs = load_cache(cache_dir / CACHE_NAME)
     assert [r.title for r in refs] == ["GitHub"]
     assert not (cache_dir / "rebuild.lock").exists()
+
+
+def test_verbose_logs_clipboard_decision_points(env, capsys, tmp_path):
+    """--verbose (PASS_ROFI_VERBOSE=1) logs clipboard text, host, cache
+    stats and match count to stderr."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    env_v = dict(env, PASS_ROFI_VERBOSE="1")
+    client = FakeClient()
+    rc, out, err = run_full(
+        [], env_v, capsys, client=client, clipboard=FakeClipboard("https://github.com/login")
+    )
+    assert rc == 0
+    assert "extracted host: 'github.com'" in err
+    assert "cache: 1 items, 1 with urls" in err
+    assert "matched 1 items" in err
+    assert client.view_calls
+
+
+def test_verbose_off_by_default_no_stderr(env, capsys, tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard("https://github.com"))
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "pass-rofi:" not in err
+
+
+def test_verbose_logs_no_host_when_clipboard_not_url(env, capsys, tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    env_v = dict(env, PASS_ROFI_VERBOSE="1")
+    client = FakeClient()
+    rc, out, err = run_full(
+        [], env_v, capsys, client=client, clipboard=FakeClipboard("plain text")
+    )
+    assert rc == 0
+    assert "extracted host: ''" in err
+    assert "clipboard matching did not handle the launch" in err
+    assert cli_mod.REFRESH_ROW in out
+
+
+def test_main_verbose_flag_sets_env(monkeypatch, tmp_path):
+    """--verbose on the CLI entry point enables PASS_ROFI_VERBOSE."""
+    captured = {}
+
+    def fake_run_rofi_mode(argv, env):
+        captured["env"] = env
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_rofi_mode", fake_run_rofi_mode)
+    monkeypatch.setenv("PASS_ROFI_CACHE_DIR", str(tmp_path))
+    assert cli_mod.main(["--verbose"]) == 0
+    assert captured["env"]["PASS_ROFI_VERBOSE"] == "1"
+    assert cli_mod.main([]) == 0
+    assert captured["env"].get("PASS_ROFI_VERBOSE") is None

@@ -86,11 +86,15 @@ def build_rofi_argv(script: str) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    verbose = "--verbose" in args or "-v" in args
     rofi = os.environ.get("PASS_ROFI_ROFI", "rofi")
     if shutil.which(rofi) is None:
         print(f"error: `{rofi}` not found in PATH", file=sys.stderr)
         return 1
     script = _script_entry()
+    if verbose:
+        script = f"{script} --verbose"
     proc = subprocess.run(build_rofi_argv(script), env=_script_env())
     return proc.returncode
 

@@ -53,8 +53,13 @@ def extract_host(text: str) -> str:
 
 
 class Clipboard:
-    def __init__(self, runner: Runner | None = None) -> None:
+    def __init__(
+        self,
+        runner: Runner | None = None,
+        log: Callable[[str], None] | None = None,
+    ) -> None:
         self._runner = runner or _run
+        self._log = log
 
     def _pick(self, *names: str) -> str | None:
         if self._runner is not None:
@@ -70,6 +75,8 @@ class Clipboard:
     def read(self) -> str:
         paste = self._pick("wl-paste", "xclip", "xsel")
         if paste is None:
+            if self._log:
+                self._log("no clipboard tool found (tried wl-paste, xclip, xsel)")
             return ""
         argv = (
             [paste, "--no-newline"]
@@ -78,12 +85,21 @@ class Clipboard:
             if paste == "xclip"
             else [paste, "--clipboard", "--output"]
         )
+        if self._log:
+            self._log(f"clipboard read via {' '.join(argv)}")
         try:
-            return self._runner(argv)
+            out = self._runner(argv)
         except ClipboardError:
+            if self._log:
+                self._log(f"clipboard read failed: {' '.join(argv)}")
             return ""
         except UnicodeDecodeError:
+            if self._log:
+                self._log("clipboard read: non-UTF-8 content, ignored")
             return ""
+        if self._log:
+            self._log(f"clipboard content: {out[:200]!r}")
+        return out
 
     def write(self, text: str) -> None:
         copy = self._pick("wl-copy", "xclip", "xsel")
