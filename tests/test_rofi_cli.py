@@ -239,31 +239,26 @@ def test_clipboard_match_reruns_when_clipboard_changes(env, capsys):
     assert client.view_calls[-1].item_id == "i2"
 
 
-def test_clipboard_match_skipped_when_clipboard_unchanged(env, capsys):
-    """Same clipboard URL twice in a row: second launch shows the full list."""
+def test_clipboard_match_every_launch_with_url(env, capsys):
+    """Copying a link and launching must match on every launch while the
+    clipboard keeps holding that URL — the marker must not suppress it."""
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
     client = FakeClient()
-    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard("https://github.com"))
-    assert client.view_calls
-    capsys.readouterr()
-    client.view_calls.clear()
-    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard("https://github.com"))
-    assert not client.view_calls
-    assert cli_mod.REFRESH_ROW in out
+    for _ in range(3):
+        rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard("https://github.com/login"))
+        assert rc == 0
+        capsys.readouterr()
+    assert len(client.view_calls) == 3
 
 
-def test_copy_clears_clipboard_marker(env, capsys):
-    """After copying a field, the clipboard marker is cleared so the next
-    launch re-evaluates the (now secret-filled) clipboard."""
+def test_copy_then_launch_with_url_still_matches(env, capsys):
+    """After copying a field (clipboard now holds a secret), a later launch
+    with a URL in the clipboard must still match that URL."""
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
-    from pass_rofi.state import StateStore
-
-    state = StateStore(cache_dir)
-    state.set_clip_marker("abc")
     client = FakeClient()
     clipboard = FakeClipboard()
     env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
@@ -272,7 +267,10 @@ def test_copy_clears_clipboard_marker(env, capsys):
     env3 = dict(env, ROFI_RETV="1", ROFI_INFO="password")
     run(["password"], env3, capsys, client=client, clipboard=clipboard)
     assert clipboard.written == ["secret"]
-    assert state.get_clip_marker() == ""
+    capsys.readouterr()
+    client.view_calls.clear()
+    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard("https://github.com"))
+    assert client.view_calls and client.view_calls[0].item_id == "i1"
 
 
 def test_open_item_does_not_set_last_copied(env, capsys):

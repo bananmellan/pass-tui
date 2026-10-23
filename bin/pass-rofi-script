@@ -4,7 +4,14 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+for _candidate in (
+    os.environ.get("PASS_ROFI_SRC"),
+    os.path.join(_HERE, "..", "src"),
+):
+    if _candidate and os.path.isdir(os.path.join(_candidate, "pass_rofi")):
+        sys.path.insert(0, _candidate)
+        break
 
 from pass_rofi.cli import main
 

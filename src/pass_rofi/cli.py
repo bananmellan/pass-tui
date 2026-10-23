@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import rofi as rofi_proto
 from .cache import CACHE_NAME, Cache, match_host
-from .clipboard import Clipboard, ClipboardError, clipboard_marker, extract_host
+from .clipboard import Clipboard, ClipboardError, extract_host
 from .config import Config
 from .display import field_row, item_row, parse_info
 from .fields import field_labels, field_value
@@ -106,7 +106,6 @@ def _copy_field(
         _debug_log(state.dir, f"copy failed: {exc}")
         return
     state.set_last_copied(ref)
-    state.clear_clip_marker()
 
 
 def _clipboard_matches(
@@ -116,15 +115,16 @@ def _clipboard_matches(
     client: PassCli,
     clipboard: Clipboard,
 ) -> bool:
-    """Clipboard-URL matching. Returns True if the launch was handled."""
+    """Clipboard-URL matching. Returns True if the launch was handled.
+
+    Runs on every launch while the clipboard holds a URL: copying a link
+    and launching must always match, even if the clipboard text is unchanged
+    since the previous launch.
+    """
     clip = clipboard.read()[:2048]
     host = extract_host(clip)
     if not host:
         return False
-    marker = clipboard_marker(clip)
-    if marker == state.get_clip_marker():
-        return False
-    state.set_clip_marker(marker)
     cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
     matches = match_host(cache.load(), host)
     if len(matches) == 1:

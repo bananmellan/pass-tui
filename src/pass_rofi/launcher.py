@@ -13,13 +13,35 @@ def _script_entry() -> str:
     override = os.environ.get("PASS_ROFI_SCRIPT")
     if override:
         return override
-    packaged = HERE.parent.parent / "bin" / "pass-rofi-script"
-    if packaged.exists():
-        return str(packaged)
-    local = HERE.parent.parent.parent / "bin" / "pass-rofi-script"
-    if local.exists():
-        return str(local)
+    for candidate in (
+        HERE.parent.parent / "bin" / "pass-rofi-script",
+        HERE.parent.parent.parent / "bin" / "pass-rofi-script",
+    ):
+        if candidate.exists():
+            return str(candidate)
     return "pass-rofi-script"
+
+
+def _script_env() -> dict:
+    """Environment for the script-mode backend.
+
+    Editable installs put pass_rofi on sys.path but not necessarily in the
+    subprocess environment, so point the backend at the source tree when the
+    package isn't importable. The shim also honors PASS_ROFI_SRC itself.
+    """
+    env = dict(os.environ)
+    if os.environ.get("PASS_ROFI_SRC"):
+        return env
+    try:
+        import pass_rofi  # noqa: F401
+
+        return env
+    except ImportError:
+        pass
+    src = HERE.parent.parent / "src"
+    if (src / "pass_rofi").is_dir():
+        env["PASS_ROFI_SRC"] = str(src)
+    return env
 
 
 def detect_theme() -> str:
@@ -69,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: `{rofi}` not found in PATH", file=sys.stderr)
         return 1
     script = _script_entry()
-    proc = subprocess.run(build_rofi_argv(script))
+    proc = subprocess.run(build_rofi_argv(script), env=_script_env())
     return proc.returncode
 
 

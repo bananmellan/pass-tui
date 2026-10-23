@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 import subprocess
@@ -51,10 +50,6 @@ def extract_host(text: str) -> str:
     if port is not None:
         return f"{host}:{port}"
     return host
-
-
-def clipboard_marker(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class Clipboard:

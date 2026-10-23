@@ -1,7 +1,16 @@
 #!/usr/bin/env fish
 # Launches the pass-rofi rofi script mode, matching GNOME's color scheme.
 
-set -l script (dirname (status filename))/pass-rofi-script
+set -l here (dirname (status filename))
+set -l script $here/pass-rofi-script
+
+# Editable pip installs don't put the source tree on the subprocess path;
+# point the backend at it when the package isn't importable.
+if not set -q PASS_ROFI_SRC; and not python3 -c "import pass_rofi" 2>/dev/null
+    if test -d $here/../src/pass_rofi
+        set -x PASS_ROFI_SRC (realpath $here/../src)
+    end
+end
 
 set scheme (dconf read /org/gnome/desktop/interface/color-scheme 2>/dev/null | string trim)
 

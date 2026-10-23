@@ -1,4 +1,4 @@
-from pass_rofi.clipboard import Clipboard, ClipboardError, clipboard_marker, extract_host
+from pass_rofi.clipboard import Clipboard, ClipboardError, extract_host
 
 
 def test_extract_host_http_https():
@@ -17,11 +17,6 @@ def test_extract_host_rejects_non_urls():
     assert extract_host("just some text") == ""
     assert extract_host("ftp://example.com") == ""
     assert extract_host("") == ""
-
-
-def test_clipboard_marker_is_stable():
-    assert clipboard_marker("https://a.com") == clipboard_marker("https://a.com")
-    assert clipboard_marker("https://a.com") != clipboard_marker("https://b.com")
 
 
 def test_read_uses_wl_paste_first():

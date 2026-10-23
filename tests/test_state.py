@@ -33,15 +33,6 @@ def test_clear_last_copied(tmp_path):
     assert state.last_copy_age() is None
 
 
-def test_clip_marker(tmp_path):
-    state = StateStore(tmp_path)
-    assert state.get_clip_marker() == ""
-    state.set_clip_marker("abc")
-    assert StateStore(tmp_path).get_clip_marker() == "abc"
-    state.clear_clip_marker()
-    assert state.get_clip_marker() == ""
-
-
 def test_open_item_roundtrip(tmp_path):
     state = StateStore(tmp_path)
     assert state.get_open_item() is None

@@ -10,7 +10,7 @@ from .models import ItemRef
 
 
 class StateStore:
-    """Small on-disk state: current rofi stage, last copied item, clipboard marker."""
+    """Small on-disk state: current rofi stage, last copied item, open item."""
 
     def __init__(self, cache_dir: Path) -> None:
         self.dir = cache_dir
@@ -18,7 +18,6 @@ class StateStore:
         self.last_item_path = cache_dir / "lastitem.json"
         self.stamp_path = cache_dir / "copy.stamp"
         self.open_item_path = cache_dir / "open-item.json"
-        self.clip_marker_path = cache_dir / "clip.marker"
 
     def _write(self, path: Path, data: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,18 +94,3 @@ class StateStore:
                 pass
             return
         self._write(self.open_item_path, json.dumps(ref.to_dict()).encode("utf-8"))
-
-    def get_clip_marker(self) -> str:
-        try:
-            return self.clip_marker_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            return ""
-
-    def set_clip_marker(self, marker: str) -> None:
-        self._write(self.clip_marker_path, marker.encode("utf-8"))
-
-    def clear_clip_marker(self) -> None:
-        try:
-            self.clip_marker_path.unlink()
-        except OSError:
-            pass

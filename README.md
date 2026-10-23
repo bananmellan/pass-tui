@@ -19,11 +19,11 @@ split into small, testable modules.
 - Vault listing is parallelized across vaults (thread pool), so even large
   accounts rebuild quickly.
 - If the clipboard contains an `http(s)://` URL (`wl-paste`, `xclip` or `xsel`),
-  items whose cached urls contain the clipboard hostname are surfaced: a single
-  match opens it directly, multiple matches are listed, zero matches falls back
-  to the full list. URL matching only ever reads the cache, and runs on every
-  launch where the clipboard content changed since the last launch (copying a
-  field clears the marker, since the clipboard then holds a secret).
+  items whose cached urls contain the clipboard hostname (fuzzy: path, query,
+  trailing slashes and case are ignored) are surfaced: a single match opens it
+  directly, multiple matches are listed, zero matches falls back to the full
+  list. URL matching only ever reads the cache, and runs on every launch while
+  the clipboard holds a URL.
 - Going back to the item list (Ctrl+l, unknown selection, refresh row) renders
   straight from the cache and never blocks on `pass-cli`; a stale cache triggers
   a background rebuild instead.
@@ -119,7 +119,7 @@ src/pass_rofi/
   launcher.py            python launcher (alternative to the fish script)
   passcli.py             pass-cli subprocess wrapper + JSON parsing
   cache.py               metadata cache (atomic, 0600, TTL, background refresh)
-  state.py               stage / last-copied / clipboard-marker state
+  state.py               stage / last-copied / open-item state
   display.py             rofi row formatting (pango + info payloads)
   clipboard.py           wl-clipboard/xclip/xsel abstraction, URL host extraction
   fields.py              item-view JSON -> field labels and values
