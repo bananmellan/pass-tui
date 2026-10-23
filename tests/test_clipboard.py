@@ -4,7 +4,13 @@ from pass_rofi.clipboard import Clipboard, ClipboardError, clipboard_marker, ext
 def test_extract_host_http_https():
     assert extract_host("https://github.com/login") == "github.com"
     assert extract_host("http://Example.COM/path?q=1") == "example.com"
-    assert extract_host("https://user:pw@sub.example.com:8443/x") == "sub.example.com"
+    assert extract_host("https://user:pw@sub.example.com:8443/x") == "sub.example.com:8443"
+
+
+def test_extract_host_strips_path_and_trailing_slashes():
+    assert extract_host("https://nc.honung.org/apps/dashboard/") == "nc.honung.org"
+    assert extract_host("https://nc.honung.org/") == "nc.honung.org"
+    assert extract_host("https://nc.honung.org") == "nc.honung.org"
 
 
 def test_extract_host_rejects_non_urls():

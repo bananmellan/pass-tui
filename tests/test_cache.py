@@ -169,4 +169,31 @@ def test_match_host_is_case_insensitive_substring(tmp_path):
     assert match_host(refs, "missing.dev") == []
 
 
+def test_match_host_fuzzy_path_and_trailing_slash():
+    """A clipboard URL with a deep path matches items with the bare host."""
+    refs = [
+        ref(urls=("https://nc.honung.org",)),
+        ref("s1", "i2", "NC app", ("https://nc.honung.org/apps/dashboard/",)),
+        ref("s1", "i3", "NC trailing", ("https://nc.honung.org/",)),
+        ref("s1", "i4", "Other", ("https://other.example.com",)),
+    ]
+    matches = match_host(refs, "nc.honung.org")
+    assert {r.title for r in matches} == {"GitHub", "NC app", "NC trailing"}
+
+
+def test_match_host_empty_host_matches_nothing():
+    refs = [ref()]
+    assert match_host(refs, "") == []
+    assert match_host(refs, "/") == []
+
+
+def test_match_host_with_port():
+    refs = [
+        ref(urls=("http://localhost:8080/app",)),
+        ref("s1", "i2", "Other", ("http://localhost/app",)),
+    ]
+    matches = match_host(refs, "localhost:8080")
+    assert [r.title for r in matches] == ["GitHub"]
+
+
 import pytest  # noqa: E402

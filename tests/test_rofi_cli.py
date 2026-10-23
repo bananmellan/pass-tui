@@ -121,6 +121,30 @@ def tmp_path_cache(env):
     return Path(env["PASS_ROFI_CACHE_DIR"])
 
 
+def test_initial_clipboard_deep_path_matches_bare_host_items(env, capsys):
+    """Clipboard https://nc.honung.org/apps/dashboard/ matches items whose
+    urls are https://nc.honung.org (fuzzy, trailing slashes, paths)."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache(
+        [
+            ref("s1", "i1", "NC", ("https://nc.honung.org",)),
+            ref("s1", "i2", "NC app", ("https://nc.honung.org/apps/dashboard/",)),
+            ref("s1", "i3", "Bank", ("https://bank.example.com",)),
+        ],
+        cache_dir / CACHE_NAME,
+    )
+    client = FakeClient()
+    rc, out = run(
+        [], env, capsys, client=client,
+        clipboard=FakeClipboard("https://nc.honung.org/apps/dashboard/"),
+    )
+    assert rc == 0
+    assert "NC" in out and "NC app" in out
+    assert "Bank" not in out
+    assert not client.view_calls
+
+
 def test_initial_clipboard_single_match_opens_item(env, capsys):
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)

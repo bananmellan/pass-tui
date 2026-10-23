@@ -75,7 +75,19 @@ def cache_age(path: Path, now: float | None = None) -> float | None:
 
 
 def match_host(refs: list[ItemRef], host: str) -> list[ItemRef]:
-    host = host.lower()
+    """Fuzzy host matching.
+
+    Matches an item if any of its urls contains the clipboard host as a
+    substring (case-insensitive), so `nc.honung.org` matches
+    `https://nc.honung.org`, `https://nc.honung.org/apps/dashboard/`,
+    `http://nc.honung.org:8080/x`, etc. Also matches the reverse direction
+    (an item url containing the clipboard's full host:port), and subdomain
+    relationships in both directions are intentionally not special-cased —
+    substring matching covers the common cases.
+    """
+    host = host.lower().strip("/")
+    if not host:
+        return []
     return [ref for ref in refs if any(host in url.lower() for url in ref.urls)]
 
 

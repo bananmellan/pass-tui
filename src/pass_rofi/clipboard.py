@@ -31,7 +31,11 @@ def _run(argv: list[str], input_text: str | None = None) -> str:
 
 
 def extract_host(text: str) -> str:
-    """Return the lowercase hostname if text looks like an http(s) URL."""
+    """Return the lowercase host[:port] if text looks like an http(s) URL.
+
+    The path is dropped so that `https://nc.honung.org/apps/dashboard/`
+    matches items whose urls contain `nc.honung.org` (see match_host).
+    """
     text = text.strip()
     if not (text.startswith("http://") or text.startswith("https://")):
         return ""
@@ -39,7 +43,14 @@ def extract_host(text: str) -> str:
         host = urlsplit(text).hostname or ""
     except ValueError:
         return ""
-    return host.lower()
+    host = host.lower()
+    try:
+        port = urlsplit(text).port
+    except ValueError:
+        port = None
+    if port is not None:
+        return f"{host}:{port}"
+    return host
 
 
 def clipboard_marker(text: str) -> str:
