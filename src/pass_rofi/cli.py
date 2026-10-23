@@ -8,37 +8,16 @@ import time
 from pathlib import Path
 
 from . import rofi as rofi_proto
-from .cache import CACHE_NAME, Cache, match_host
+from .cache import CACHE_NAME, Cache, match_host, sort_refs
 from .clipboard import Clipboard, ClipboardError, extract_host
 from .config import Config
-from .display import field_row, item_row, parse_info, permanent_row
+from .display import field_row, item_row, parse_info
 from .fields import field_labels, field_value
 from .models import ItemRef
 from .passcli import PassCli, PassCliError
 from .state import StateStore
 
 REFRESH_ROW = "🔄 Refresh item list"
-
-
-def _filter_items(refs, query: str):
-    """Case-insensitive substring match on title, urls and vault name.
-
-    Mirrors what rofi's own token matcher does with the row `meta`, so the
-    Ctrl+Return live-search list matches what typing in the prompt shows.
-    """
-    tokens = [token.lower() for token in query.split() if token]
-    if not tokens:
-        return list(refs)
-
-    def haystack(ref) -> str:
-        parts = [ref.title, *ref.urls, ref.vault_name]
-        return " ".join(part for part in parts if part).lower()
-
-    return [
-        ref
-        for ref in refs
-        if all(token in haystack(ref) for token in tokens)
-    ]
 
 
 def _debug_log(cache_dir: Path, message: str) -> None:
@@ -81,36 +60,33 @@ def _show_item_list(
     cache: Cache,
     state: StateStore,
     host_filter: str = "",
-    query: str | None = None,
+    matches: list[ItemRef] | None = None,
 ) -> None:
     """Print the item list in script mode.
 
-    The list starts empty: rofi cannot re-invoke the script per keystroke,
-    so instead of flooding the window with hundreds of rows we show a hint
-    row and let the user type a query. `query=None` (initial launch, back
-    navigation, refresh) shows no items, only the hint; `query=""`
-    (Ctrl+Return on an empty prompt) lists every item; a non-empty query
-    lists the items matching it. Once rows are printed, rofi live-filters
-    them client-side as the user keeps typing.
+    All items are printed so rofi can filter them live as the user types
+    (rofi cannot re-invoke the script per keystroke, so client-side
+    filtering is the only way to get keystroke search). Rows are printed
+    title-sorted; when the clipboard produced host matches, those go
+    first in best-match order and the prompt is prefilled with the host,
+    so the matches are on top from the start.
     """
     refs = cache.load()
     state.set_stage(rofi_proto.STAGE_LIST)
     print(rofi_proto.mode_option("use-hot-keys", "true"))
     print(rofi_proto.mode_option("markup-rows", "true"))
     print(rofi_proto.mode_option("prompt", "Proton Pass" if not host_filter else f"Proton Pass ({host_filter})"))
+    if host_filter:
+        print(rofi_proto.mode_option("filter", host_filter))
     print(REFRESH_ROW)
-    if query is None:
-        rows = []
-        hint = "Type to search — Ctrl+Return to list all items"
-    elif not query:
-        rows = [item_row(ref) for ref in refs]
-        hint = f"{len(rows)} items — Ctrl+l to go back to search"
+    if matches is not None:
+        matched_ids = {(ref.share_id, ref.item_id) for ref in matches}
+        rest = [ref for ref in sort_refs(refs) if (ref.share_id, ref.item_id) not in matched_ids]
+        ordered = matches + rest
     else:
-        rows = [item_row(ref) for ref in _filter_items(refs, query)]
-        hint = f"{len(rows)} matches for {query!r} — Ctrl+Return to list all"
-    print(permanent_row(hint))
-    if rows:
-        print("\n".join(rows))
+        ordered = sort_refs(refs)
+    if ordered:
+        print("\n".join(item_row(ref) for ref in ordered))
 
 
 def _open_item(
@@ -221,11 +197,7 @@ def _clipboard_matches(
         _open_item(cache, state, client, matches[0], config=config)
         return True
     if len(matches) > 1:
-        state.set_stage(rofi_proto.STAGE_LIST)
-        print(rofi_proto.mode_option("use-hot-keys", "true"))
-        print(rofi_proto.mode_option("markup-rows", "true"))
-        print(rofi_proto.mode_option("prompt", f"Proton Pass ({host})"))
-        print("\n".join(item_row(ref) for ref in matches))
+        _show_item_list(cache, state, host_filter=host, matches=matches)
         return True
     return False
 
@@ -369,14 +341,6 @@ def run_rofi_mode(
         state.set_stage(rofi_proto.STAGE_LIST)
         cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
         _show_item_list(cache, state)
-        return 0
-    if retv == rofi_proto.RETV_CUSTOM and state.get_stage() == rofi_proto.STAGE_LIST:
-        # kb-accept-custom (default Ctrl+Return): the typed prompt text is
-        # passed as argv with RETV 2. This is how the user's query reaches
-        # the script — rofi does not re-invoke the script per keystroke.
-        query = argv[0] if argv else ""
-        _verbose(config, cache_dir, f"search query: {query[:120]!r}")
-        _show_item_list(cache, state, query=query)
         return 0
     if retv in (rofi_proto.RETV_SELECTED, rofi_proto.RETV_CUSTOM):
         selected = argv[0] if argv else ""

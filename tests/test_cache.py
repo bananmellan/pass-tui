@@ -1,7 +1,7 @@
 import json
 import time
 
-from pass_rofi.cache import CACHE_NAME, Cache, cache_age, dump_cache, load_cache, match_host
+from pass_rofi.cache import CACHE_NAME, Cache, cache_age, dump_cache, load_cache, match_host, sort_refs
 from pass_rofi.models import ItemRef
 from pass_rofi.passcli import PassCli, PassCliError
 
@@ -40,7 +40,32 @@ def test_roundtrip(tmp_path):
     path = tmp_path / CACHE_NAME
     refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
     dump_cache(refs, path)
-    assert load_cache(path) == refs
+    assert load_cache(path) == sort_refs(refs)
+
+
+def test_dump_cache_stores_items_title_sorted(tmp_path):
+    """The cache is written title-sorted so display order matches the file."""
+    path = tmp_path / CACHE_NAME
+    dump_cache([ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))], path)
+    titles = [item["title"] for item in json.loads(path.read_text())["items"]]
+    assert titles == ["Bank", "GitHub"]
+
+
+def test_sort_refs_case_insensitive_title_then_vault(tmp_path):
+    refs = [
+        ref("s1", "i1", "github", (), "Work"),
+        ref("s1", "i2", "Bank", (), "Personal"),
+        ref("s1", "i3", "GitHub", (), "Personal"),
+    ]
+    # Case-insensitive: "github" and "GitHub" tie, vault breaks the tie
+    # (same vault "Personal" vs "Work" ordering applies within the pair).
+    assert [r.title for r in sort_refs(refs)] == ["Bank", "GitHub", "github"]
+    # Same title: vault name breaks the tie.
+    refs = [
+        ref("s1", "i1", "GitHub", (), "Work"),
+        ref("s1", "i2", "GitHub", (), "Personal"),
+    ]
+    assert [r.vault_name for r in sort_refs(refs)] == ["Personal", "Work"]
 
 
 def test_cache_file_is_not_world_readable(tmp_path):

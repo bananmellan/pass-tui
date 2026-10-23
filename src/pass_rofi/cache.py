@@ -59,11 +59,21 @@ def load_cache(path: Path) -> list[ItemRef]:
     return refs
 
 
+def sort_refs(refs: list[ItemRef]) -> list[ItemRef]:
+    """Sort items for display: title A-Z (case-insensitive), vault as tiebreak.
+
+    This is the order rows are printed in; rofi keeps this order when no
+    filter is active and re-ranks matches when one is (levenshtein, unless
+    the user toggles fzf sorting).
+    """
+    return sorted(refs, key=lambda ref: (ref.title.lower(), ref.vault_name.lower()))
+
+
 def dump_cache(refs: list[ItemRef], path: Path) -> None:
     payload = {
         "version": CACHE_VERSION,
         "created_at": int(time.time()),
-        "items": [ref.to_dict() for ref in refs],
+        "items": [ref.to_dict() for ref in sort_refs(refs)],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, json.dumps(payload, separators=(",", ":")).encode("utf-8"))

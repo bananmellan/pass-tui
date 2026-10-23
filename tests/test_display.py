@@ -1,4 +1,4 @@
-from pass_rofi.display import field_row, item_row, parse_info, permanent_row
+from pass_rofi.display import field_row, item_row, parse_info
 from pass_rofi.models import ItemRef
 
 
@@ -74,18 +74,3 @@ def test_field_row_display_is_escaped():
 
 def test_parse_info_without_info_returns_empty():
     assert parse_info("plain row") == ()
-
-
-def test_permanent_row_is_nonselectable_and_permanent():
-    row = permanent_row("Type to search")
-    entry, _, extras = row.partition("\x00")
-    assert entry == "Type to search"
-    pairs = extras.split("\x1f")
-    assert pairs[0] == "nonselectable" and pairs[1] == "true"
-    assert pairs[2] == "permanent" and pairs[3] == "true"
-
-
-def test_permanent_row_escapes_markup():
-    row = permanent_row("<b>x</b> & co")
-    entry = row.partition("\x00")[0]
-    assert entry == "&lt;b&gt;x&lt;/b&gt; &amp; co"
