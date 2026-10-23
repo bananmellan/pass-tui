@@ -108,8 +108,9 @@ def test_parse_items_dedups_same_item_twice():
     assert items[0].title == "GitHub"
 
 
-def test_parse_items_keeps_same_item_id_in_different_shares():
-    """Same item id under two shares is two distinct items."""
+def test_parse_items_dedups_same_item_id_across_shares():
+    """The same item visible through two shares (same item_id, different
+    share_id) is one item — Proton Pass item ids are globally unique."""
     base = {
         "id": "i1",
         "content": {
@@ -120,7 +121,8 @@ def test_parse_items_keeps_same_item_id_in_different_shares():
     items = parse_items(
         {"items": [dict(base, share_id="s1"), dict(base, share_id="s2")]}
     )
-    assert len(items) == 2
+    assert len(items) == 1
+    assert items[0].share_id == "s1"
 
 
 def test_list_all_items_dedups_same_item_listed_twice_across_vaults():
@@ -145,10 +147,56 @@ def test_list_all_items_dedups_same_item_listed_twice_across_vaults():
             ),
         }
     )
-    items = client.list_all_items()
+    items, raw_count = client.list_all_items()
     assert len(items) == 1
     assert items[0].item_id == "i1"
     assert items[0].share_id == "s1"
+    assert raw_count == 2
+
+
+def test_list_all_items_dedups_shared_item_visible_in_two_vaults():
+    """The same item (same item_id) returned by two different shares — the
+    shared-item case — must appear only once."""
+    base = {
+        "id": "i1",
+        "content": {
+            "title": "GitHub",
+            "content": {"Login": {"urls": ["https://github.com"]}},
+        },
+    }
+    client = make_client(
+        {
+            ("vault", "list", "--output", "json"): VAULTS_JSON,
+            ("item", "list", "--share-id", "s1", "--output", "json", "--show-secrets"): json.dumps(
+                {"items": [dict(base, share_id="s1")]}
+            ),
+            ("item", "list", "--share-id", "s2", "--output", "json", "--show-secrets"): json.dumps(
+                {"items": [dict(base, share_id="s2")]}
+            ),
+        }
+    )
+    items, raw_count = client.list_all_items()
+    assert len(items) == 1
+    assert items[0].item_id == "i1"
+    assert raw_count == 2
+
+
+def test_list_all_items_returns_deterministic_vault_order():
+    """Results follow vault-list order (not thread completion order)."""
+    def slow_first(argv):
+        key = tuple(argv[1:])
+        if key == ("vault", "list", "--output", "json"):
+            return json.dumps({"vaults": [{"share_id": "s1", "name": "A"}, {"share_id": "s2", "name": "B"}]})
+        if key[:4] == ("item", "list", "--share-id", "s1"):
+            import time as t; t.sleep(0.2)  # s1 finishes last if completion-ordered
+            return json.dumps({"items": [{"id": "i1", "share_id": "s1", "content": {"title": "FromS1", "content": {}}}]})
+        if key[:4] == ("item", "list", "--share-id", "s2"):
+            return json.dumps({"items": [{"id": "i2", "share_id": "s2", "content": {"title": "FromS2", "content": {}}}]})
+        raise PassCliError(f"unexpected {argv}")
+
+    client = PassCli("pass-cli", runner=slow_first, max_workers=2)
+    items, _raw = client.list_all_items()
+    assert [i.title for i in items] == ["FromS1", "FromS2"]
 
 
 def test_parse_items_extracts_metadata_only():
@@ -274,9 +322,11 @@ def test_list_all_items_fans_out_across_vaults():
             ("item", "list", "--share-id", "s2", "--output", "json", "--show-secrets"): ITEMS_S2,
         }
     )
-    items = client.list_all_items()
+    items, raw_count = client.list_all_items()
     assert {i.title for i in items} == {"GitHub", "Bank"}
     assert {i.share_id for i in items} == {"s1", "s2"}
+    # ITEMS_S1 has 2 entries but one is Trashed -> 1 item; ITEMS_S2 -> 1 item.
+    assert raw_count == 2
 
 
 def test_list_all_items_tolerates_one_vault_failing():
@@ -287,8 +337,9 @@ def test_list_all_items_tolerates_one_vault_failing():
             ("item", "list", "--share-id", "s2", "--output", "json"): PassCliError("boom"),
         }
     )
-    items = client.list_all_items()
+    items, raw_count = client.list_all_items()
     assert [i.title for i in items] == ["GitHub"]
+    assert raw_count == 1
 
 
 def test_list_all_items_raises_when_everything_fails():
@@ -312,8 +363,9 @@ def test_list_all_items_falls_back_to_default_vault():
             ),
         }
     )
-    items = client.list_all_items()
+    items, raw_count = client.list_all_items()
     assert [i.title for i in items] == ["Solo"]
+    assert raw_count == 1
 
 
 VIEW_JSON = json.dumps(

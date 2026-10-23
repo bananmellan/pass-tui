@@ -202,20 +202,22 @@ class Cache:
     def load(self) -> list[ItemRef]:
         return load_cache(self.path)
 
-    def rebuild(self) -> list[ItemRef]:
-        refs = self.client.list_all_items()
+    def rebuild(self) -> tuple[list[ItemRef], int]:
+        """Rebuild the cache. Returns (items, raw_count) where raw_count is
+        the number of item entries pass-cli returned before dedup."""
+        refs, raw_count = self.client.list_all_items()
         dump_cache(refs, self.path)
-        return refs
+        return refs, raw_count
 
     def get(self, force_refresh: bool = False) -> list[ItemRef]:
         refs = [] if force_refresh else self.load()
         if not refs:
-            refs = self.rebuild()
-            return refs
+            fresh, _raw = self.rebuild()
+            return fresh
         age = cache_age(self.path)
         if age is not None and age > self.ttl:
             try:
-                refs = self.rebuild()
+                refs, _raw = self.rebuild()
             except PassCliError:
                 pass
         return refs
@@ -238,14 +240,14 @@ class Cache:
         spawn(self)
         return True
 
-    def refresh_locked(self) -> list[ItemRef]:
+    def refresh_locked(self) -> tuple[list[ItemRef], int]:
         try:
-            refs = self.client.list_all_items()
+            refs, raw_count = self.client.list_all_items()
         except PassCliError:
-            return self.load()
+            return self.load(), 0
         dump_cache(refs, self.path)
         try:
             (self.path.parent / "rebuild.lock").unlink()
         except OSError:
             pass
-        return refs
+        return refs, raw_count

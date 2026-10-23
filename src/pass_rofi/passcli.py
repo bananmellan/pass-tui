@@ -125,7 +125,7 @@ def _urls_from_entry(raw: dict) -> list[str]:
 
 def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
     items = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
     for raw in _as_list(data, ("items", "data", "entries")):
         if not isinstance(raw, dict):
             continue
@@ -156,12 +156,12 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
         share_id = share_id or ""
         # The same item can appear more than once in a vault listing (e.g.
         # pass-cli re-emits it when the vault response is paginated oddly, or
-        # a shared item shows up in two shares). Dedup on the identity pair
-        # so the rofi list never shows the same item twice.
-        key = (share_id, item_id)
-        if key in seen:
+        # a shared item shows up in two shares). Dedup on item_id — Proton
+        # Pass item ids are globally unique — so the rofi list never shows
+        # the same item twice.
+        if item_id in seen:
             continue
-        seen.add(key)
+        seen.add(item_id)
         items.append(
             ItemRef(
                 share_id=share_id,
@@ -231,19 +231,28 @@ class PassCli:
         )
         return parse_items(data, vault)
 
-    def list_all_items(self) -> list[ItemRef]:
+    def list_all_items(self) -> tuple[list[ItemRef], int]:
+        """All items across all vaults, deduped.
+
+        Returns (items, raw_count): raw_count is how many item entries
+        pass-cli returned before dedup, so callers can log when the
+        response contained duplicates.
+        """
         vaults = self.list_vaults()
         if not vaults:
             data = self._exec_json(
                 [self.binary, "item", "list", "--output", "json", "--show-secrets"]
             )
-            return parse_items(data)
+            parsed = parse_items(data)
+            return parsed, len(parsed)
         results: list[ItemRef] = []
         errors: list[str] = []
         workers = max(1, min(self.max_workers, len(vaults)))
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(self.list_items, vault): vault for vault in vaults}
-            for future in as_completed(futures):
+            # Submit in vault order and collect in vault order (not
+            # completion order) so the result is deterministic.
+            futures = [pool.submit(self.list_items, vault) for vault in vaults]
+            for future in futures:
                 try:
                     results.extend(future.result())
                 except PassCliError as exc:
@@ -251,8 +260,9 @@ class PassCli:
         if not results and errors:
             raise PassCliError("; ".join(errors))
         # A shared item can be visible through two shares; parse_items dedups
-        # within one vault response, this dedups across vaults on identity.
-        return dedup_refs(results)
+        # within one vault response, this dedups across vaults on item_id.
+        raw_count = len(results)
+        return dedup_refs(results), raw_count
 
     def view_item(self, ref: ItemRef) -> dict:
         data = self._exec_json(

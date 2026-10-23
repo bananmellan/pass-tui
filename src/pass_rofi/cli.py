@@ -9,6 +9,7 @@ from pathlib import Path
 
 from . import rofi as rofi_proto
 from .cache import CACHE_NAME, Cache, match_host, sort_refs
+from .dedup import display_duplicate_groups
 from .clipboard import Clipboard, ClipboardError, extract_host
 from .config import Config
 from .display import field_row, item_row, parse_info
@@ -61,6 +62,7 @@ def _show_item_list(
     state: StateStore,
     host_filter: str = "",
     matches: list[ItemRef] | None = None,
+    config: Config | None = None,
 ) -> None:
     """Print the item list in script mode.
 
@@ -80,11 +82,28 @@ def _show_item_list(
         print(rofi_proto.mode_option("filter", host_filter))
     print(REFRESH_ROW)
     if matches is not None:
-        matched_ids = {(ref.share_id, ref.item_id) for ref in matches}
-        rest = [ref for ref in sort_refs(refs) if (ref.share_id, ref.item_id) not in matched_ids]
+        matched_ids = {ref.item_id for ref in matches}
+        rest = [ref for ref in sort_refs(refs) if ref.item_id not in matched_ids]
         ordered = matches + rest
     else:
         ordered = sort_refs(refs)
+    if config is not None and config.verbose:
+        id_counts: dict[str, int] = {}
+        for ref in refs:
+            id_counts[ref.item_id] = id_counts.get(ref.item_id, 0) + 1
+        dup_ids = {k: v for k, v in id_counts.items() if v > 1}
+        _verbose(
+            config,
+            cache.path.parent,
+            f"list: {len(refs)} cached items, {len(ordered)} rows printed"
+            + (f", {len(dup_ids)} item_ids appear more than once: {dict(list(dup_ids.items())[:5])}" if dup_ids else ", no repeated item_ids"),
+        )
+        for group in display_duplicate_groups(ordered):
+            desc = ", ".join(
+                f"{ref.title!r} share={ref.share_id[:8]}… item={ref.item_id[:8]}… vault={ref.vault_name!r}"
+                for ref in group
+            )
+            _verbose(config, cache.path.parent, f"list: visually identical rows: {desc}")
     if ordered:
         print("\n".join(item_row(ref) for ref in ordered))
 
@@ -197,7 +216,7 @@ def _clipboard_matches(
         _open_item(cache, state, client, matches[0], config=config)
         return True
     if len(matches) > 1:
-        _show_item_list(cache, state, host_filter=host, matches=matches)
+        _show_item_list(cache, state, host_filter=host, matches=matches, config=config)
         return True
     return False
 
@@ -237,10 +256,15 @@ def _initial(
     cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
     if not cache.get():
         try:
-            cache.rebuild()
+            refs, raw_count = cache.rebuild()
+            _verbose(
+                config,
+                cache.path.parent,
+                f"initial rebuild: {len(refs)} unique items from {raw_count} raw entries",
+            )
         except PassCliError as exc:
             _debug_log(cache.path.parent, f"initial rebuild failed: {exc}")
-    _show_item_list(cache, state)
+    _show_item_list(cache, state, config=config)
 
 
 def _on_select(
@@ -255,10 +279,15 @@ def _on_select(
     if selected == REFRESH_ROW:
         state.set_open_item(None)
         try:
-            cache.rebuild()
+            refs, raw_count = cache.rebuild()
+            _verbose(
+                config,
+                cache.path.parent,
+                f"refresh: {len(refs)} unique items from {raw_count} raw entries",
+            )
         except PassCliError as exc:
             _debug_log(cache.path.parent, f"refresh failed: {exc}")
-        _show_item_list(cache, state)
+        _show_item_list(cache, state, config=config)
         return
 
     parts = parse_info(selected) or parse_info(info)
@@ -294,7 +323,7 @@ def _on_select(
                 f" — cache has {len(refs)} items; it may be stale",
             )
         state.set_open_item(None)
-        _show_item_list(cache, state)
+        _show_item_list(cache, state, config=config)
         return
 
     if selected:
@@ -305,7 +334,7 @@ def _on_select(
                 if _open_item(cache, state, client, ref, config=config):
                     return
     state.set_open_item(None)
-    _show_item_list(cache, state)
+    _show_item_list(cache, state, config=config)
 
 
 def run_rofi_mode(
@@ -340,7 +369,7 @@ def run_rofi_mode(
         state.set_open_item(None)
         state.set_stage(rofi_proto.STAGE_LIST)
         cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
-        _show_item_list(cache, state)
+        _show_item_list(cache, state, config=config)
         return 0
     if retv in (rofi_proto.RETV_SELECTED, rofi_proto.RETV_CUSTOM):
         selected = argv[0] if argv else ""
@@ -358,12 +387,13 @@ def run_rebuild(config: Config | None = None, env=None) -> int:
     cache = Cache(cache_dir / CACHE_NAME, PassCli(config.pass_cli_bin), ttl=config.cache_ttl)
     _verbose(config, cache_dir, "rebuild: start")
     try:
-        refs = cache.rebuild()
+        refs, raw_count = cache.rebuild()
         with_urls = sum(1 for ref in refs if ref.urls)
         _verbose(
             config,
             cache_dir,
-            f"rebuild: ok, {len(refs)} items, {with_urls} with urls",
+            f"rebuild: ok, {len(refs)} unique items from {raw_count} raw entries, "
+            f"{with_urls} with urls",
         )
         for ref in refs[:20]:
             _verbose(

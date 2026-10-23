@@ -54,7 +54,7 @@ class FakeClient:
         self.totp_calls = []
 
     def list_all_items(self):
-        return []
+        return [], 0
 
     def view_item_with_retry(self, item_ref):
         self.view_calls.append(item_ref)
@@ -151,7 +151,7 @@ def test_initial_rebuilds_when_cache_missing(env, capsys, monkeypatch):
     spawned = []
     monkeypatch.setattr(cli_mod, "_spawn_rebuild", lambda config: spawned.append(config))
     client = FakeClient()
-    client.list_all_items = lambda: [ref()]
+    client.list_all_items = lambda: ([ref()], 1)
     rc, out = run([], env, capsys, client=client)
     assert rc == 0
     assert "GitHub" in out
@@ -552,7 +552,7 @@ def test_select_refresh_rebuilds(env, capsys, monkeypatch):
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
     client = FakeClient()
-    client.list_all_items = lambda: [ref(), ref("s1", "i9", "New", ())]
+    client.list_all_items = lambda: ([ref(), ref("s1", "i9", "New", ())], 2)
     env2 = dict(env, ROFI_RETV="1")
     rc, out = run([cli_mod.REFRESH_ROW], env2, capsys, client=client)
     assert rc == 0
@@ -605,7 +605,7 @@ def test_custom_keybinding_range_all_refresh(env, capsys, monkeypatch):
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
     client = FakeClient()
-    client.list_all_items = lambda: [ref()]
+    client.list_all_items = lambda: ([ref()], 1)
     for retv in ("10", "19", "28"):
         rc, out = run([], dict(env, ROFI_RETV=retv), capsys, client=client)
         assert rc == 0
@@ -620,7 +620,7 @@ def test_custom_keybinding_from_fields_stage_returns_to_list(env, capsys, monkey
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
     client = FakeClient()
-    client.list_all_items = lambda: [ref()]
+    client.list_all_items = lambda: ([ref()], 1)
     env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
     run(["item\x1fs1\x1fi1"], env2, capsys, client=client)
     capsys.readouterr()

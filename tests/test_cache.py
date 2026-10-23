@@ -61,17 +61,30 @@ def test_dedup_refs_drops_same_identity_keeps_first(tmp_path):
     assert [r.item_id for r in dedup_refs(refs)] == ["i1", "i2"]
 
 
-def test_dedup_refs_keeps_same_title_in_different_vaults(tmp_path):
-    """Same title in two vaults is two different items — both stay."""
+def test_dedup_refs_dedups_same_item_id_across_shares(tmp_path):
+    """The same item visible through two shares (same item_id, different
+    share_id) is one item — Proton Pass item ids are globally unique."""
     refs = [
         ref("s1", "i1", "GitHub", ("https://github.com",)),
         ref("s2", "i1", "GitHub", ("https://github.com",)),
     ]
+    result = dedup_refs(refs)
+    assert len(result) == 1
+    assert result[0].share_id == "s1"
+
+
+def test_dedup_refs_keeps_same_title_with_different_item_ids(tmp_path):
+    """Two genuinely different items that happen to share a title (different
+    item_id) both stay."""
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",)),
+        ref("s2", "i2", "GitHub", ("https://github.com",)),
+    ]
     assert len(dedup_refs(refs)) == 2
 
 
-def test_dedup_refs_keeps_same_ids_with_different_titles(tmp_path):
-    """Defensive: differing metadata on the same identity is still one item."""
+def test_dedup_refs_dedups_same_id_with_different_titles(tmp_path):
+    """Defensive: differing metadata on the same item_id is still one item."""
     refs = [
         ref("s1", "i1", "GitHub", ("https://github.com",)),
         ref("s1", "i1", "GitHub (old)", ()),
