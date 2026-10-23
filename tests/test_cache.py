@@ -2,6 +2,7 @@ import json
 import time
 
 from pass_rofi.cache import CACHE_NAME, Cache, cache_age, dump_cache, load_cache, match_host, sort_refs
+from pass_rofi.dedup import dedup_refs
 from pass_rofi.models import ItemRef
 from pass_rofi.passcli import PassCli, PassCliError
 
@@ -49,6 +50,63 @@ def test_dump_cache_stores_items_title_sorted(tmp_path):
     dump_cache([ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))], path)
     titles = [item["title"] for item in json.loads(path.read_text())["items"]]
     assert titles == ["Bank", "GitHub"]
+
+
+def test_dedup_refs_drops_same_identity_keeps_first(tmp_path):
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",)),
+        ref("s1", "i1", "GitHub", ("https://github.com",)),
+        ref("s1", "i2", "Bank", ("https://bank.example.com",)),
+    ]
+    assert [r.item_id for r in dedup_refs(refs)] == ["i1", "i2"]
+
+
+def test_dedup_refs_keeps_same_title_in_different_vaults(tmp_path):
+    """Same title in two vaults is two different items — both stay."""
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",)),
+        ref("s2", "i1", "GitHub", ("https://github.com",)),
+    ]
+    assert len(dedup_refs(refs)) == 2
+
+
+def test_dedup_refs_keeps_same_ids_with_different_titles(tmp_path):
+    """Defensive: differing metadata on the same identity is still one item."""
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",)),
+        ref("s1", "i1", "GitHub (old)", ()),
+    ]
+    assert [r.title for r in dedup_refs(refs)] == ["GitHub"]
+
+
+def test_load_cache_dedups_stale_file(tmp_path):
+    """A cache file written by an older version with duplicate entries is
+    deduped on load so rofi never shows the same item twice."""
+    path = tmp_path / CACHE_NAME
+    payload = {
+        "version": 1,
+        "created_at": 0,
+        "items": [
+            ref("s1", "i1", "GitHub", ("https://github.com",)).to_dict(),
+            ref("s1", "i1", "GitHub", ("https://github.com",)).to_dict(),
+            ref("s1", "i2", "Bank", ("https://bank.example.com",)).to_dict(),
+        ],
+    }
+    path.write_text(json.dumps(payload))
+    assert [r.item_id for r in load_cache(path)] == ["i1", "i2"]
+
+
+def test_dump_cache_dedups_before_writing(tmp_path):
+    path = tmp_path / CACHE_NAME
+    dump_cache(
+        [
+            ref("s1", "i1", "GitHub", ("https://github.com",)),
+            ref("s1", "i1", "GitHub", ("https://github.com",)),
+        ],
+        path,
+    )
+    items = json.loads(path.read_text())["items"]
+    assert len(items) == 1
 
 
 def test_sort_refs_case_insensitive_title_then_vault(tmp_path):

@@ -77,6 +77,80 @@ def test_parse_vaults_bare_list():
     assert vaults == [Vault("x", "V")]
 
 
+def test_parse_vaults_dedups_same_share_id():
+    """pass-cli can list the same share twice (e.g. shared + owned); each
+    share must only be queried once or every item appears duplicated."""
+    data = json.dumps(
+        {
+            "vaults": [
+                {"share_id": "s1", "name": "Personal"},
+                {"share_id": "s1", "name": "Personal"},
+                {"share_id": "s2", "name": "Work"},
+            ]
+        }
+    )
+    vaults = parse_vaults(json.loads(data))
+    assert vaults == [Vault("s1", "Personal"), Vault("s2", "Work")]
+
+
+def test_parse_items_dedups_same_item_twice():
+    """An item repeated in one vault response is parsed once."""
+    entry = {
+        "id": "i1",
+        "share_id": "s1",
+        "content": {
+            "title": "GitHub",
+            "content": {"Login": {"urls": ["https://github.com"]}},
+        },
+    }
+    items = parse_items({"items": [entry, dict(entry)]}, Vault("s1", "Personal"))
+    assert len(items) == 1
+    assert items[0].title == "GitHub"
+
+
+def test_parse_items_keeps_same_item_id_in_different_shares():
+    """Same item id under two shares is two distinct items."""
+    base = {
+        "id": "i1",
+        "content": {
+            "title": "GitHub",
+            "content": {"Login": {"urls": ["https://github.com"]}},
+        },
+    }
+    items = parse_items(
+        {"items": [dict(base, share_id="s1"), dict(base, share_id="s2")]}
+    )
+    assert len(items) == 2
+
+
+def test_list_all_items_dedups_same_item_listed_twice_across_vaults():
+    """The exact same item (same share + id) returned by two vault queries
+    must appear only once — e.g. pass-cli listing the same share twice."""
+    entry = {
+        "id": "i1",
+        "share_id": "s1",
+        "content": {
+            "title": "GitHub",
+            "content": {"Login": {"urls": ["https://github.com"]}},
+        },
+    }
+    client = make_client(
+        {
+            ("vault", "list", "--output", "json"): VAULTS_JSON,
+            ("item", "list", "--share-id", "s1", "--output", "json", "--show-secrets"): json.dumps(
+                {"items": [entry]}
+            ),
+            ("item", "list", "--share-id", "s2", "--output", "json", "--show-secrets"): json.dumps(
+                {"items": [entry]}
+            ),
+        }
+    )
+    items = client.list_all_items()
+    assert len(items) == 1
+    assert items[0].item_id == "i1"
+    assert items[0].share_id == "s1"
+
+
 def test_parse_items_extracts_metadata_only():
     items = parse_items(json.loads(ITEMS_S1), Vault("s1", "Personal"))
     assert len(items) == 1

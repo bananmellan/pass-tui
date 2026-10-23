@@ -5,6 +5,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Iterable
 
+from .dedup import dedup_refs
 from .models import ItemRef, Vault
 
 
@@ -73,13 +74,16 @@ def _nested(data: dict, *keys: str):
 
 def parse_vaults(data: Any) -> list[Vault]:
     vaults = []
+    seen: set[str] = set()
     for raw in _as_list(data, ("vaults", "shares", "data", "items")):
         if not isinstance(raw, dict):
             continue
         share_id = _scalar(raw, "share_id", "shareId", "shareID", "id")
+        if not share_id or share_id in seen:
+            continue
+        seen.add(share_id)
         name = _scalar(raw, "name", "title", "vault_name", "vaultName") or share_id
-        if share_id:
-            vaults.append(Vault(share_id=share_id, name=name or "Unnamed vault"))
+        vaults.append(Vault(share_id=share_id, name=name or "Unnamed vault"))
     return vaults
 
 
@@ -121,6 +125,7 @@ def _urls_from_entry(raw: dict) -> list[str]:
 
 def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
     items = []
+    seen: set[tuple[str, str]] = set()
     for raw in _as_list(data, ("items", "data", "entries")):
         if not isinstance(raw, dict):
             continue
@@ -148,9 +153,18 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
             _scalar(raw, "vault_name", "vaultName", "share_name")
             or (vault.name if vault else "")
         )
+        share_id = share_id or ""
+        # The same item can appear more than once in a vault listing (e.g.
+        # pass-cli re-emits it when the vault response is paginated oddly, or
+        # a shared item shows up in two shares). Dedup on the identity pair
+        # so the rofi list never shows the same item twice.
+        key = (share_id, item_id)
+        if key in seen:
+            continue
+        seen.add(key)
         items.append(
             ItemRef(
-                share_id=share_id or "",
+                share_id=share_id,
                 item_id=item_id,
                 title=title,
                 urls=tuple(dict.fromkeys(_urls_from_entry(raw))),
@@ -236,7 +250,9 @@ class PassCli:
                     errors.append(str(exc))
         if not results and errors:
             raise PassCliError("; ".join(errors))
-        return results
+        # A shared item can be visible through two shares; parse_items dedups
+        # within one vault response, this dedups across vaults on identity.
+        return dedup_refs(results)
 
     def view_item(self, ref: ItemRef) -> dict:
         data = self._exec_json(

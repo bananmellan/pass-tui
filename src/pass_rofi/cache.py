@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .dedup import dedup_refs
 from .models import ItemRef
 from .passcli import PassCli, PassCliError
 
@@ -56,7 +57,7 @@ def load_cache(path: Path) -> list[ItemRef]:
             refs.append(ItemRef.from_dict(entry))
         except ValueError:
             continue
-    return refs
+    return dedup_refs(refs)
 
 
 def sort_refs(refs: list[ItemRef]) -> list[ItemRef]:
@@ -73,7 +74,7 @@ def dump_cache(refs: list[ItemRef], path: Path) -> None:
     payload = {
         "version": CACHE_VERSION,
         "created_at": int(time.time()),
-        "items": [ref.to_dict() for ref in sort_refs(refs)],
+        "items": [ref.to_dict() for ref in sort_refs(dedup_refs(refs))],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
