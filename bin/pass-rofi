@@ -1,0 +1,21 @@
+#!/usr/bin/env fish
+# Launches the pass-rofi rofi script mode, matching GNOME's color scheme.
+
+set -l script (dirname (status filename))/pass-rofi-script
+
+set scheme (dconf read /org/gnome/desktop/interface/color-scheme 2>/dev/null | string trim)
+
+switch $scheme
+    case "'prefer-dark'"
+        set theme Dark
+    case '*'
+        set theme Arc
+end
+
+set -l args -normal-window -kb-custom-1 Ctrl+l -kb-mode-complete "" -modi "pass:$script" -show pass -theme-str "window { width: 720px; }"
+
+if test -f /home/linuxbrew/.linuxbrew/share/rofi/themes/$theme.rasi
+    exec rofi $args -theme $theme
+else
+    exec rofi $args
+end
