@@ -51,6 +51,7 @@ def _spawn_rebuild(config: Config) -> None:
 def _show_item_list(cache: Cache, state: StateStore, host_filter: str = "") -> None:
     refs = cache.get()
     state.set_stage(rofi_proto.STAGE_LIST)
+    print(rofi_proto.mode_option("use-hot-keys", "true"))
     print(rofi_proto.mode_option("markup-rows", "true"))
     print(rofi_proto.mode_option("prompt", "Proton Pass" if not host_filter else f"Proton Pass ({host_filter})"))
     print(REFRESH_ROW)
@@ -70,6 +71,7 @@ def _open_item(cache: Cache, state: StateStore, client: PassCli, ref: ItemRef) -
         return False
     state.set_stage(rofi_proto.STAGE_FIELDS)
     state.set_last_copied(ref)
+    print(rofi_proto.mode_option("use-hot-keys", "true"))
     print(rofi_proto.mode_option("markup-rows", "true"))
     print(rofi_proto.mode_option("prompt", ref.title))
     print("\n".join(field_row(label, label) for label in labels))
@@ -135,6 +137,7 @@ def _initial(
                 return
             if len(matches) > 1:
                 state.set_stage(rofi_proto.STAGE_LIST)
+                print(rofi_proto.mode_option("use-hot-keys", "true"))
                 print(rofi_proto.mode_option("markup-rows", "true"))
                 print(rofi_proto.mode_option("prompt", f"Proton Pass ({host})"))
                 print("\n".join(item_row(ref) for ref in matches))
@@ -208,8 +211,9 @@ def run_rofi_mode(
         _debug_log(cache_dir, f"invoked argv={argv} env RETV={env.get('ROFI_RETV')}")
 
     retv = rofi_proto.retv_from_env(env)
-    if retv == rofi_proto.RETV_CUSTOM_KEY_BASE:
+    if rofi_proto.RETV_CUSTOM_KEY_BASE <= retv <= rofi_proto.RETV_CUSTOM_KEY_BASE + 18:
         state.clear_last_copied()
+        state.set_stage(rofi_proto.STAGE_LIST)
         cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
         _show_item_list(cache, state)
         return 0

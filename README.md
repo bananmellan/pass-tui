@@ -25,16 +25,22 @@ split into small, testable modules.
 - Rows are rendered with pango markup (bold title, dimmed url/vault) via the
   script-mode `markup-rows` option. The row's *entry text* is an opaque token
   (`item<US><share_id><US><item_id>`); the human-readable text is attached with
-  the row `display` property and the token is mirrored into `info`
-  (`ROFI_INFO`), so selection resolves the exact item even with duplicate
-  titles.
+  the row `display` property, searchable text with `meta`, and the token is
+  mirrored into `info` (`ROFI_INFO`), so selection resolves the exact item
+  even with duplicate titles.
+- Custom keybindings (`Ctrl+l` etc.) are enabled via the script-mode
+  `use-hot-keys` option; without it rofi swallows them in script mode.
 - Selecting an item fetches its secrets on demand (`pass-cli item view`) and
   shows a field menu; selecting a field copies its value to the clipboard.
   TOTP codes are generated via `pass://<share>/<item>/totp`.
 - After copying, relaunching within `PASS_ROFI_REOPEN_SECONDS` (default 20)
   reopens the same item's field menu.
-- `Ctrl+l` (rofi custom keybinding 1) refreshes the list; the first row
-  ("🔄 Refresh item list") forces a synchronous rebuild.
+- Search works on title, urls and vault name: each row carries a `meta`
+  property with the searchable text (rofi only token-matches the entry text,
+  which is an opaque id token).
+- `Ctrl+l`, `Alt+b` or `BackSpace` (rofi custom keybinding 1, enabled via the
+  script-mode `use-hot-keys` option) goes back to / refreshes the item list;
+  the first row ("🔄 Refresh item list") forces a synchronous rebuild.
 
 ## Requirements
 

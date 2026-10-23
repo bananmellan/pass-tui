@@ -25,7 +25,7 @@ def info_from_env(env) -> str:
 
 
 def mode_option(key: str, value: str) -> str:
-    return f"\x00{key}\x1f{value}\n"
+    return f"\x00{key}\x1f{value}"
 
 
 def emit(rows: list[str]) -> None:

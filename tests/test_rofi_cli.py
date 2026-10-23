@@ -92,14 +92,16 @@ def test_initial_lists_cached_items_with_info(env, capsys, tmp_path):
     rc, out = run([], env, capsys)
     assert rc == 0
     lines = out.splitlines()
-    assert "\x00markup-rows\x1ftrue" in lines[0]
+    assert "\x00use-hot-keys\x1ftrue" in lines[0]
+    assert "\x00markup-rows\x1ftrue" in lines[1]
     assert any(line.startswith("\x00prompt\x1f") for line in lines)
     assert cli_mod.REFRESH_ROW in lines
     item_lines = [line for line in lines if line.startswith("item\x1f")]
     assert any("GitHub" in line for line in item_lines)
     assert any("Bank" in line for line in item_lines)
     assert any("\x00display\x1f" in line and "<b>GitHub</b>" in line for line in item_lines)
-    assert any("\x00info\x1fitem\x1fs1\x1fi1" in line for line in item_lines)
+    assert any("\x1fmeta\x1f" in line and "GitHub" in line for line in item_lines)
+    assert any("\x1finfo\x1fitem\x1fs1\x1fi1" in line for line in item_lines)
 
 
 def test_initial_rebuilds_when_cache_missing(env, capsys, monkeypatch):
@@ -310,6 +312,45 @@ def test_custom_keybinding_refreshes(env, capsys):
     rc, out = run([], env2, capsys)
     assert rc == 0
     assert "GitHub" in out
+    assert "\x00use-hot-keys\x1ftrue" in out
+
+
+def test_custom_keybinding_range_all_refresh(env, capsys):
+    """Every custom keybinding slot (10-28) resets to the item list."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    for retv in ("10", "19", "28"):
+        rc, out = run([], dict(env, ROFI_RETV=retv), capsys)
+        assert rc == 0
+        assert "GitHub" in out
+        capsys.readouterr()
+
+
+def test_custom_keybinding_from_fields_stage_returns_to_list(env, capsys):
+    """Ctrl+L while in the field menu goes back to the item list."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
+    run(["item\x1fs1\x1fi1"], env2, capsys, client=client)
+    capsys.readouterr()
+    rc, out = run([], dict(env, ROFI_RETV="10"), capsys, client=client)
+    assert rc == 0
+    assert cli_mod.REFRESH_ROW in out
+    assert "GitHub" in out
+
+
+def test_list_emits_hot_keys_and_markup_headers(env, capsys):
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    rc, out = run([], env, capsys)
+    lines = out.splitlines()
+    assert lines[0] == "\x00use-hot-keys\x1ftrue"
+    assert lines[1] == "\x00markup-rows\x1ftrue"
+    assert lines[2].startswith("\x00prompt\x1f")
 
 
 def test_select_unknown_item_returns_to_list(env, capsys):

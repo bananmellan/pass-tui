@@ -18,6 +18,11 @@ def item_row(ref: ItemRef) -> str:
     selection can be resolved exactly, even with duplicate titles. The human
     readable text is attached via the row's `display` property, and the same
     token is mirrored into `info` for robustness across rofi versions.
+
+    `meta` carries the searchable text (title, urls, vault name). rofi only
+    token-matches the *entry* text in script mode (see script_token_match in
+    rofi's source), and the entry is the opaque token — so without `meta`,
+    typing a title would filter out every row.
     """
     token = SEP.join(("item", ref.share_id, ref.item_id))
     parts = [f"<b>{escape(ref.title)}</b>"]
@@ -26,11 +31,19 @@ def item_row(ref: ItemRef) -> str:
     if ref.vault_name:
         parts.append(f"<span alpha='40%'>[{escape(ref.vault_name)}]</span>")
     display = "  ·  ".join(parts)
-    return f"{token}\x00display{SEP}{display}\x00info{SEP}{token}"
+    meta_parts = [ref.title, *ref.urls, ref.vault_name]
+    meta = " ".join(dict.fromkeys(part for part in meta_parts if part))
+    extras = (
+        f"display{SEP}{display}"
+        f"{SEP}meta{SEP}{meta}"
+        f"{SEP}info{SEP}{token}"
+    )
+    return f"{token}\x00{extras}"
 
 
 def field_row(label: str, info: str) -> str:
-    return f"{info}\x00display{SEP}{escape(label)}\x00info{SEP}{info}"
+    extras = f"display{SEP}{escape(label)}{SEP}info{SEP}{info}"
+    return f"{info}\x00{extras}"
 
 
 def parse_info(row: str) -> tuple[str, ...]:
