@@ -83,17 +83,39 @@ def parse_vaults(data: Any) -> list[Vault]:
     return vaults
 
 
-def _urls_from_content(content: dict) -> list[str]:
+def _urls_from_entry(raw: dict) -> list[str]:
+    """Extract urls from a pass-cli item entry, secrets aside.
+
+    pass-cli serializes ItemContent as an externally-tagged enum:
+    content.content = {"Login": {"urls": [...], "autofill_urls": [...], ...}}.
+    autofill_urls entries are objects ({"url": ..., "mode": ...}), urls
+    entries are plain strings. Older/alternate shapes (bare strings, a
+    single "url" string) are tolerated.
+    """
     urls: list[str] = []
-    for value in content.values():
-        if not isinstance(value, dict):
-            continue
-        for key in ("urls", "url", "autofill_urls"):
-            candidate = value.get(key)
-            items = candidate if isinstance(candidate, list) else [candidate]
-            for item in items:
-                if isinstance(item, str) and item:
-                    urls.append(item)
+    content = _nested(raw, "content") or _nested(raw, "item", "content") or {}
+    if not isinstance(content, dict):
+        return urls
+    inner = content.get("content")
+    sections: list = []
+    if isinstance(inner, dict):
+        sections = [inner]
+    elif isinstance(inner, list):
+        sections = [s for s in inner if isinstance(s, dict)]
+    for section in sections:
+        for value in section.values():
+            if not isinstance(value, dict):
+                continue
+            for key in ("urls", "url", "autofill_urls", "autofillUrls"):
+                candidate = value.get(key)
+                entries = candidate if isinstance(candidate, list) else [candidate]
+                for entry in entries:
+                    if isinstance(entry, str) and entry:
+                        urls.append(entry)
+                    elif isinstance(entry, dict):
+                        url = entry.get("url")
+                        if isinstance(url, str) and url:
+                            urls.append(url)
     return urls
 
 
@@ -109,12 +131,15 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
         title = _scalar(raw, "title") or _scalar(content, "title")
         if not item_id or not title:
             continue
-        inner = content.get("content") if isinstance(content.get("content"), dict) else {}
-        item_type = (
-            _scalar(raw, "type", "item_type", "itemType")
-            or (next(iter(inner.keys())) if inner else "")
-            or "item"
-        )
+        inner = content.get("content")
+        if isinstance(inner, dict):
+            item_type = (
+                _scalar(raw, "type", "item_type", "itemType")
+                or next(iter(inner.keys()), "")
+                or "item"
+            )
+        else:
+            item_type = _scalar(raw, "type", "item_type", "itemType") or "item"
         share_id = (
             _scalar(raw, "share_id", "shareId", "shareID", "vault_id", "vaultId")
             or (vault.share_id if vault else "")
@@ -128,7 +153,7 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
                 share_id=share_id or "",
                 item_id=item_id,
                 title=title,
-                urls=tuple(dict.fromkeys(_urls_from_content(inner))),
+                urls=tuple(dict.fromkeys(_urls_from_entry(raw))),
                 vault_name=vault_name or "",
                 item_type=item_type,
             )
@@ -175,6 +200,9 @@ class PassCli:
         return parse_vaults(data)
 
     def list_items(self, vault: Vault) -> list[ItemRef]:
+        # --show-secrets is required: without it pass-cli serializes bare
+        # ItemSummary objects (title/id/state only, no content), so no urls
+        # would be available for clipboard matching. Only metadata is kept.
         data = self._exec_json(
             [
                 self.binary,
@@ -184,6 +212,7 @@ class PassCli:
                 vault.share_id,
                 "--output",
                 "json",
+                "--show-secrets",
             ]
         )
         return parse_items(data, vault)
@@ -191,7 +220,9 @@ class PassCli:
     def list_all_items(self) -> list[ItemRef]:
         vaults = self.list_vaults()
         if not vaults:
-            data = self._exec_json([self.binary, "item", "list", "--output", "json"])
+            data = self._exec_json(
+                [self.binary, "item", "list", "--output", "json", "--show-secrets"]
+            )
             return parse_items(data)
         results: list[ItemRef] = []
         errors: list[str] = []

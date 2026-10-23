@@ -90,6 +90,98 @@ def test_parse_items_extracts_metadata_only():
     assert "secret" not in json.dumps(ref.to_dict())
 
 
+def test_parse_items_real_passcli_show_secrets_shape():
+    """pass-cli item list --show-secrets --output json shape.
+
+    Enum fields serialize as externally-tagged objects ({"Login": {...}}),
+    autofill_urls entries are objects, and state is an enum name string.
+    """
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "vault_id": "v1",
+                "state": "Active",
+                "flags": [],
+                "create_time": "2026-01-01T00:00:00",
+                "modify_time": "2026-01-01T00:00:00",
+                "content": {
+                    "title": "GitHub",
+                    "note": "",
+                    "item_uuid": "u1",
+                    "content": {
+                        "Login": {
+                            "email": "",
+                            "username": "me",
+                            "password": "secret",
+                            "urls": ["https://github.com"],
+                            "totp_uri": "",
+                            "passkeys": [],
+                            "autofill_urls": [
+                                {"url": "https://gist.github.com", "mode": "Default"}
+                            ],
+                        }
+                    },
+                    "extra_fields": [],
+                    "platform_specific": None,
+                    "custom_icon": None,
+                },
+            },
+            {
+                "id": "i2",
+                "share_id": "s1",
+                "state": "Trashed",
+                "content": {"title": "Old", "content": {"Note": {}}},
+            },
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert len(items) == 1
+    ref = items[0]
+    assert ref.item_id == "i1"
+    assert ref.title == "GitHub"
+    assert ref.urls == ("https://github.com", "https://gist.github.com")
+    assert ref.item_type == "Login"
+    assert "secret" not in json.dumps(ref.to_dict())
+
+
+def test_parse_items_without_show_secrets_has_no_urls():
+    """Without --show-secrets pass-cli emits ItemSummary (no content), so
+    urls are empty — callers must request --show-secrets for matching."""
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "vault_id": "v1",
+                "state": "Active",
+                "title": "GitHub",
+                "item_type": "login",
+            }
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert len(items) == 1
+    assert items[0].urls == ()
+    assert items[0].item_type == "login"
+
+
+def test_list_items_requests_show_secrets():
+    seen = []
+
+    def runner(argv):
+        seen.append(argv)
+        return ITEMS_S1
+
+    client = PassCli("pass-cli", runner=runner)
+    items = client.list_items(Vault("s1", "Personal"))
+    assert seen[0] == [
+        "pass-cli", "item", "list", "--share-id", "s1", "--output", "json", "--show-secrets"
+    ]
+    assert items[0].urls == ("https://github.com", "https://gist.github.com")
+
+
 def test_parse_items_skips_trashed():
     items = parse_items(json.loads(ITEMS_S1))
     assert [i.title for i in items] == ["GitHub"]
@@ -104,8 +196,8 @@ def test_list_all_items_fans_out_across_vaults():
     client = make_client(
         {
             ("vault", "list", "--output", "json"): VAULTS_JSON,
-            ("item", "list", "--share-id", "s1", "--output", "json"): ITEMS_S1,
-            ("item", "list", "--share-id", "s2", "--output", "json"): ITEMS_S2,
+            ("item", "list", "--share-id", "s1", "--output", "json", "--show-secrets"): ITEMS_S1,
+            ("item", "list", "--share-id", "s2", "--output", "json", "--show-secrets"): ITEMS_S2,
         }
     )
     items = client.list_all_items()
@@ -117,7 +209,7 @@ def test_list_all_items_tolerates_one_vault_failing():
     client = make_client(
         {
             ("vault", "list", "--output", "json"): VAULTS_JSON,
-            ("item", "list", "--share-id", "s1", "--output", "json"): ITEMS_S1,
+            ("item", "list", "--share-id", "s1", "--output", "json", "--show-secrets"): ITEMS_S1,
             ("item", "list", "--share-id", "s2", "--output", "json"): PassCliError("boom"),
         }
     )
@@ -129,8 +221,8 @@ def test_list_all_items_raises_when_everything_fails():
     client = make_client(
         {
             ("vault", "list", "--output", "json"): VAULTS_JSON,
-            ("item", "list", "--share-id", "s1", "--output", "json"): PassCliError("a"),
-            ("item", "list", "--share-id", "s2", "--output", "json"): PassCliError("b"),
+            ("item", "list", "--share-id", "s1", "--output", "json", "--show-secrets"): PassCliError("a"),
+            ("item", "list", "--share-id", "s2", "--output", "json", "--show-secrets"): PassCliError("b"),
         }
     )
     with pytest.raises(PassCliError):
@@ -141,7 +233,7 @@ def test_list_all_items_falls_back_to_default_vault():
     client = make_client(
         {
             ("vault", "list", "--output", "json"): json.dumps({"vaults": []}),
-            ("item", "list", "--output", "json"): json.dumps(
+            ("item", "list", "--output", "json", "--show-secrets"): json.dumps(
                 {"items": [{"id": "i9", "content": {"title": "Solo", "content": {}}}]}
             ),
         }

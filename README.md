@@ -12,7 +12,10 @@ split into small, testable modules.
 - Launching `pass-rofi` opens a rofi window listing all items from **all vaults**.
 - Items are listed from a local cache (`$XDG_CACHE_HOME/pass-rofi/items.v1.json`)
   containing only **title, item id, share id, urls, vault name and item type** —
-  never passwords, notes or other field values.
+  never passwords, notes or other field values. The rebuild runs
+  `pass-cli item list --show-secrets` (required: without it pass-cli emits
+  title/id summaries with no urls) but parses the JSON in-process and keeps
+  only the non-sensitive fields listed above; secrets are never written to disk.
 - Startup is fast: rofi shows the cached list immediately; when the cache is
   older than `PASS_ROFI_CACHE_TTL` seconds (default 600) a background rebuild is
   spawned without blocking the UI.
