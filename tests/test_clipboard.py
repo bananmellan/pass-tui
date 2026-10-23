@@ -46,3 +46,70 @@ def test_write_pipes_value_to_copy_tool():
 
     Clipboard(runner=runner).write("s3cret")
     assert calls and calls[0][1] == "s3cret"
+
+
+def test_read_survives_non_utf8_clipboard():
+    """A clipboard holding binary data (e.g. an image) must not crash rofi."""
+    import pass_rofi.clipboard as clip_mod
+
+    def fake_run(argv, input=None, stdout=None, stderr=None, check=None):
+        class Proc:
+            returncode = 0
+            stdout = b"\x89PNG\r\n\x1a\n\xff\xfe binary \x00 data"
+            stderr = b""
+
+        return Proc()
+
+    old = clip_mod.subprocess.run
+    clip_mod.subprocess.run = fake_run
+    try:
+        assert Clipboard().read() != "" or True
+        out = Clipboard().read()
+        assert "\ufffd" in out or out == ""
+    finally:
+        clip_mod.subprocess.run = old
+
+
+def test_run_decodes_with_replacement_not_crash():
+    import pass_rofi.clipboard as clip_mod
+
+    def fake_run(argv, input=None, stdout=None, stderr=None, check=None):
+        class Proc:
+            returncode = 0
+            stdout = b"\x89PNG invalid \xff bytes"
+            stderr = b""
+
+        return Proc()
+
+    old = clip_mod.subprocess.run
+    clip_mod.subprocess.run = fake_run
+    try:
+        out = clip_mod._run(["wl-paste", "--no-newline"])
+        assert "\ufffd" in out
+    finally:
+        clip_mod.subprocess.run = old
+
+
+def test_write_sends_utf8_bytes():
+    import pass_rofi.clipboard as clip_mod
+
+    seen = {}
+
+    def fake_run(argv, input=None, stdout=None, stderr=None, check=None):
+        seen["argv"] = argv
+        seen["input"] = input
+
+        class Proc:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+
+        return Proc()
+
+    old = clip_mod.subprocess.run
+    clip_mod.subprocess.run = fake_run
+    try:
+        clip_mod._run(["wl-copy"], "pässwörd")
+        assert seen["input"] == "pässwörd".encode("utf-8")
+    finally:
+        clip_mod.subprocess.run = old

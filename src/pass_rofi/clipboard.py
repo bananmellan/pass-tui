@@ -18,8 +18,7 @@ def _run(argv: list[str], input_text: str | None = None) -> str:
     try:
         proc = subprocess.run(
             argv,
-            input=input_text,
-            text=True,
+            input=input_text.encode("utf-8") if input_text is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -28,7 +27,7 @@ def _run(argv: list[str], input_text: str | None = None) -> str:
         raise ClipboardError(f"{' '.join(argv)} failed: {exc}") from exc
     if proc.returncode != 0:
         raise ClipboardError(f"{' '.join(argv)} failed")
-    return proc.stdout
+    return proc.stdout.decode("utf-8", errors="replace")
 
 
 def extract_host(text: str) -> str:
@@ -76,6 +75,8 @@ class Clipboard:
         try:
             return self._runner(argv)
         except ClipboardError:
+            return ""
+        except UnicodeDecodeError:
             return ""
 
     def write(self, text: str) -> None:

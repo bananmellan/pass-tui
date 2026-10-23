@@ -174,6 +174,16 @@ def test_initial_clipboard_non_url_ignored(env, capsys):
     assert "GitHub" in out
 
 
+def test_initial_binary_clipboard_does_not_crash(env, capsys):
+    """A binary clipboard (image bytes decoded with replacement) is ignored."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    rc, out = run([], env, capsys, clipboard=FakeClipboard("\ufffd\x89PNG\ufffd"))
+    assert rc == 0
+    assert "GitHub" in out
+
+
 def test_select_item_by_info_opens_fields(env, capsys):
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)

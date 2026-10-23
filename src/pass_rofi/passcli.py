@@ -18,7 +18,6 @@ def _run(argv: list[str], timeout: float | None = None) -> str:
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             timeout=timeout,
             check=False,
         )
@@ -26,10 +25,12 @@ def _run(argv: list[str], timeout: float | None = None) -> str:
         raise PassCliError(f"executable not found: {argv[0]}") from exc
     except subprocess.TimeoutExpired as exc:
         raise PassCliError(f"timed out: {' '.join(argv)}") from exc
+    stderr = proc.stderr.decode("utf-8", errors="replace")
+    stdout = proc.stdout.decode("utf-8", errors="replace")
     if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        detail = (stderr or stdout or "").strip().splitlines()
         raise PassCliError(detail[-1] if detail else f"{argv[0]} failed")
-    return proc.stdout
+    return stdout
 
 
 def _run_json(argv: list[str], timeout: float | None = None) -> Any:
