@@ -1,7 +1,7 @@
 import time
 
-from pass_rofi.models import ItemRef
-from pass_rofi.state import StateStore
+from pass_tui.models import ItemRef
+from pass_tui.state import StateStore
 
 
 def ref():

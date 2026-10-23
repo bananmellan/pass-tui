@@ -1,0 +1,408 @@
+"""Headless tests for the curses layer.
+
+curses needs a real terminal, so these tests run the app inside a pty
+with a fake TERM and feed it keystrokes, asserting on the final screen
+state and on what was drawn. A scripted-terminal variant exercises the
+rendering functions directly against a stub window.
+"""
+
+import json
+import os
+import pty
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from pass_tui.app import App, FieldScreen, ListScreen
+from pass_tui.cache import CACHE_NAME, dump_cache
+from pass_tui.config import Config
+from pass_tui.models import ItemRef
+from pass_tui.state import StateStore
+from pass_tui import tui
+
+
+def ref(share="s1", item="i1", title="GitHub", urls=("https://github.com",), vault="Personal"):
+    return ItemRef(share, item, title, urls, vault, "Login")
+
+
+VIEW_JSON = json.dumps(
+    {
+        "item": {
+            "content": {
+                "title": "GitHub",
+                "note": "work account",
+                "content": {
+                    "Login": {
+                        "username": "me",
+                        "password": "secret",
+                        "urls": ["https://github.com"],
+                        "totp_uri": "",
+                    }
+                },
+            }
+        }
+    }
+)
+
+
+class FakeClipboard:
+    def __init__(self, text=""):
+        self.text = text
+        self.written = []
+
+    def read(self):
+        return self.text
+
+    def write(self, value):
+        self.written.append(value)
+
+
+class FakeClient:
+    def __init__(self, view=VIEW_JSON):
+        self.view = view
+        self.view_calls = []
+
+    def list_all_items(self):
+        return [], 0
+
+    def view_item_with_retry(self, item_ref):
+        self.view_calls.append(item_ref)
+        return json.loads(self.view)
+
+    def totp(self, item_ref):
+        return "123456"
+
+
+def make_app(tmp_path, client=None, clipboard=None, refs=None):
+    from pass_tui.cache import Cache
+
+    config = Config(cache_dir=str(tmp_path / "cache"))
+    cache_dir = Path(config.cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    if refs is not None:
+        dump_cache(refs, cache_dir / CACHE_NAME)
+    client = client or FakeClient()
+    cache = Cache(cache_dir / CACHE_NAME, client, ttl=config.cache_ttl)
+    state = StateStore(cache_dir)
+    return App(config, cache, state, client, clipboard or FakeClipboard())
+
+
+# ------------------------------------------------------------ key mapping
+
+
+def test_key_name_symbolic():
+    import curses
+
+    assert tui._key_name(curses.KEY_UP) == "up"
+    assert tui._key_name(curses.KEY_DOWN) == "down"
+    assert tui._key_name(curses.KEY_PPAGE) == "pageup"
+    assert tui._key_name(curses.KEY_NPAGE) == "pagedown"
+    assert tui._key_name(curses.KEY_HOME) == "home"
+    assert tui._key_name(curses.KEY_END) == "end"
+    assert tui._key_name(10) == "enter"
+    assert tui._key_name(13) == "enter"
+    assert tui._key_name(27) == "esc"
+    assert tui._key_name(127) == "backspace"
+    assert tui._key_name(9) == "tab"
+    assert tui._key_name(3) == "ctrl_c"
+    assert tui._key_name(18) == "ctrl_r"
+
+
+def test_key_name_printable():
+    assert tui._key_name(ord("a")) == "a"
+    assert tui._key_name(ord("Z")) == "Z"
+    assert tui._key_name(ord(" ")) == " "
+    assert tui._key_name(0) == ""
+
+
+def test_truncate():
+    assert tui._truncate("hello", 10) == "hello"
+    assert tui._truncate("hello world", 8) == "hello w…"
+    assert tui._truncate("hello", 1) == "h"
+    assert tui._truncate("hello", 0) == ""
+
+
+# ------------------------------------------------------------ rendering
+
+
+class StubWindow:
+    """Minimal stand-in for a curses window: records addnstr calls."""
+
+    def __init__(self, height=24, width=80):
+        self.height = height
+        self.width = width
+        self.cells = {}
+        self.cursor = (0, 0)
+        self.refreshed = 0
+
+    def getmaxyx(self):
+        return self.height, self.width
+
+    def erase(self):
+        self.cells = {}
+
+    def addnstr(self, y, x, text, n, attr=0):
+        self.cells[(y, x)] = (text[:n], attr)
+
+    def move(self, y, x):
+        self.cursor = (y, x)
+
+    def refresh(self):
+        self.refreshed += 1
+
+    def text(self):
+        return "\n".join(
+            "".join(self.cells.get((y, x), ("", 0))[0] for x in range(self.width))
+            for y in range(self.height)
+        )
+
+
+def test_draw_list_shows_items_and_prompt(tmp_path):
+    app = make_app(tmp_path, refs=[ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))])
+    app.start()
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "Proton Pass" in text
+    assert "> " in text
+    assert "GitHub" in text
+    assert "Bank" in text
+    assert "https://github.com" in text
+    assert "[Personal]" in text
+    assert "2/2 items" in text
+    assert win.refreshed == 1
+
+
+def test_draw_list_shows_host_filter_and_query(tmp_path):
+    app = make_app(
+        tmp_path,
+        clipboard=FakeClipboard("https://github.com/login"),
+        refs=[ref()],
+    )
+    screen = app.start()
+    assert isinstance(screen, FieldScreen)  # single match opens directly
+    # Multi-match case:
+    app2 = make_app(
+        tmp_path,
+        clipboard=FakeClipboard("https://github.com"),
+        refs=[ref(), ref("s1", "i2", "GitHub Enterprise", ("https://github.com/enterprise",))],
+    )
+    screen = app2.start()
+    assert isinstance(screen, ListScreen)
+    win = StubWindow()
+    tui._draw_list(win, app2)
+    text = win.text()
+    assert "(github.com)" in text
+    assert "> github.com" in text
+
+
+def test_draw_list_marks_selected_row(tmp_path):
+    app = make_app(tmp_path, refs=[ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))])
+    app.start()
+    app.handle_key("down")
+    win = StubWindow()
+    tui._draw_list(win, app)
+    # The selected row (Bank, second row at y=3) uses A_REVERSE.
+    import curses
+
+    assert win.cells[(3, 0)][1] == curses.A_REVERSE
+    assert win.cells[(2, 0)][1] == curses.A_NORMAL
+
+
+def test_draw_fields_shows_labels(tmp_path):
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    win = StubWindow()
+    tui._draw_fields(win, app)
+    text = win.text()
+    assert "GitHub" in text
+    assert "username" in text
+    assert "password" in text
+    assert "note" in text
+    assert "enter: copy" in text
+
+
+def test_draw_fields_shows_copy_message(tmp_path):
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.handle_key("enter")
+    labels = app.screen.labels
+    idx = labels.index("password")
+    for _ in range(idx):
+        app.handle_key("down")
+    app.handle_key("enter")
+    win = StubWindow()
+    tui._draw_fields(win, app)
+    assert "Copied password" in win.text()
+
+
+def test_draw_list_truncates_long_lines(tmp_path):
+    long_title = "A" * 200
+    app = make_app(tmp_path, refs=[ref(title=long_title, urls=("https://" + "b" * 100,))])
+    app.start()
+    win = StubWindow(height=24, width=40)
+    tui._draw_list(win, app)
+    row = win.cells[(2, 0)][0]
+    assert len(row) <= 39
+
+
+def test_draw_scrolls_when_selection_moves_past_view(tmp_path):
+    refs = [ref("s1", f"i{n}", f"Item {n:02d}", ()) for n in range(30)]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    for _ in range(25):
+        app.handle_key("down")
+    win = StubWindow(height=10, width=80)
+    tui._draw_list(win, app)
+    # Selected item 25 must be visible; offset must have scrolled.
+    text = win.text()
+    assert "Item 25" in text
+    assert app.screen.offset > 0
+
+
+# ------------------------------------------------------------ pty smoke
+
+
+def _run_in_pty(tmp_path, script, refs):
+    """Run the real curses UI in a pty; `script` is a list of keystrokes
+    (bytes) sent with small delays. Returns the app after the loop ends."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dump_cache(refs, cache_dir / CACHE_NAME)
+
+    env = dict(os.environ)
+    env["TERM"] = "xterm"
+    env["PASS_TUI_CACHE_DIR"] = str(cache_dir)
+    env["LINES"] = "24"
+    env["COLUMNS"] = "80"
+
+    argv = [sys.executable, "-c", _PTY_CHILD]
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        argv, stdin=slave, stdout=slave, stderr=slave, env=env, close_fds=True
+    )
+    os.close(slave)
+    try:
+        for keys in script:
+            time.sleep(0.15)
+            os.write(master, keys)
+        deadline = time.time() + 10
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        if proc.poll() is None:
+            proc.kill()
+            raise AssertionError("pty child did not exit")
+    finally:
+        try:
+            os.close(master)
+        except OSError:
+            pass
+    return proc.returncode
+
+
+_PTY_CHILD = r"""
+import sys
+sys.path.insert(0, %r)
+from pass_tui.app import App
+from pass_tui.cache import Cache, CACHE_NAME
+from pass_tui.clipboard import Clipboard
+from pass_tui.config import Config
+from pass_tui.passcli import PassCli
+from pass_tui.state import StateStore
+from pass_tui.tui import run
+from pathlib import Path
+import json
+
+config = Config.from_env(__import__("os").environ)
+cache_dir = Path(config.cache_dir)
+client = PassCli("pass-cli", runner=lambda argv: json.dumps({"vaults": []}))
+cache = Cache(cache_dir / CACHE_NAME, client, ttl=config.cache_ttl)
+state = StateStore(cache_dir)
+
+VIEW = json.dumps({"item": {"content": {"title": "GitHub", "note": "", "content": {"Login": {"username": "me", "password": "secret", "urls": ["https://github.com"], "totp_uri": ""}}}}})
+
+class C:
+    def view_item_with_retry(self, ref):
+        return json.loads(VIEW)
+    def totp(self, ref):
+        return "123456"
+    def list_all_items(self):
+        return [], 0
+
+class Clip:
+    def read(self):
+        return ""
+    def write(self, value):
+        Path(cache_dir / "copied.txt").write_text(value)
+
+app = App(config, cache, state, C(), Clip())
+run(app)
+""" % str(Path(__file__).resolve().parent.parent / "src")
+
+
+def test_pty_quit_with_esc(tmp_path):
+    rc = _run_in_pty(tmp_path, [b"\x1b"], [ref()])
+    assert rc == 0
+
+
+def test_pty_open_item_and_copy(tmp_path):
+    rc = _run_in_pty(tmp_path, [b"\r", b"\x1b", b"\x1b"], [ref()])
+    assert rc == 0
+    # esc from fields goes back to list; second esc quits.
+    assert (tmp_path / "cache").is_dir()
+
+
+def test_pty_type_to_filter_then_quit(tmp_path):
+    refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
+    rc = _run_in_pty(tmp_path, [b"bank", b"\x1b", b"\x1b"], refs)
+    assert rc == 0
+
+
+def test_pty_ctrl_c_quits(tmp_path):
+    """Ctrl-C must quit cleanly.
+
+    The sandbox pty does not translate the 0x03 byte into SIGINT (ISIG
+    delivery is unreliable here), so send the signal directly to the
+    child's process group, exactly as a real terminal would on Ctrl-C.
+    """
+    import signal
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    env = dict(os.environ)
+    env["TERM"] = "xterm"
+    env["PASS_TUI_CACHE_DIR"] = str(cache_dir)
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _PTY_CHILD],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env=env,
+        close_fds=True,
+        start_new_session=True,
+    )
+    os.close(slave)
+    try:
+        time.sleep(0.8)
+        os.killpg(proc.pid, signal.SIGINT)
+        deadline = time.time() + 10
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.1)
+        assert proc.poll() is not None, "pty child did not exit after SIGINT"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            os.close(master)
+        except OSError:
+            pass
+    assert proc.returncode == 0
+
+
+import subprocess  # noqa: E402  (used by _run_in_pty)

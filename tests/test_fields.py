@@ -1,6 +1,6 @@
 import json
 
-from pass_rofi.fields import field_labels, field_value
+from pass_tui.fields import field_labels, field_value
 
 VIEW = {
     "item": {

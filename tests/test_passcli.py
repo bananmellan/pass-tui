@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from pass_rofi.models import ItemRef, Vault
-from pass_rofi.passcli import PassCli, PassCliError, parse_item_view, parse_items, parse_vaults
+from pass_tui.models import ItemRef, Vault
+from pass_tui.passcli import PassCli, PassCliError, parse_item_view, parse_items, parse_vaults
 
 
 def make_client(routes):

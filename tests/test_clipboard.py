@@ -1,4 +1,4 @@
-from pass_rofi.clipboard import Clipboard, ClipboardError, extract_host
+from pass_tui.clipboard import Clipboard, ClipboardError, extract_host
 
 
 def test_extract_host_http_https():
@@ -61,7 +61,7 @@ def test_write_pipes_value_to_copy_tool():
 
 def test_read_survives_non_utf8_clipboard():
     """A clipboard holding binary data (e.g. an image) must not crash rofi."""
-    import pass_rofi.clipboard as clip_mod
+    import pass_tui.clipboard as clip_mod
 
     def fake_run(argv, input=None, stdout=None, stderr=None, check=None):
         class Proc:
@@ -82,7 +82,7 @@ def test_read_survives_non_utf8_clipboard():
 
 
 def test_run_decodes_with_replacement_not_crash():
-    import pass_rofi.clipboard as clip_mod
+    import pass_tui.clipboard as clip_mod
 
     def fake_run(argv, input=None, stdout=None, stderr=None, check=None):
         class Proc:
@@ -102,7 +102,7 @@ def test_run_decodes_with_replacement_not_crash():
 
 
 def test_write_sends_utf8_bytes():
-    import pass_rofi.clipboard as clip_mod
+    import pass_tui.clipboard as clip_mod
 
     seen = {}
 

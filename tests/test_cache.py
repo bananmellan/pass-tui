@@ -1,10 +1,10 @@
 import json
 import time
 
-from pass_rofi.cache import CACHE_NAME, Cache, cache_age, dump_cache, load_cache, match_host, sort_refs
-from pass_rofi.dedup import dedup_refs
-from pass_rofi.models import ItemRef
-from pass_rofi.passcli import PassCli, PassCliError
+from pass_tui.cache import CACHE_NAME, Cache, cache_age, dump_cache, load_cache, match_host, sort_refs
+from pass_tui.dedup import dedup_refs
+from pass_tui.models import ItemRef
+from pass_tui.passcli import PassCli, PassCliError
 
 
 def ref(share="s1", item="i1", title="GitHub", urls=("https://github.com",), vault="Personal"):

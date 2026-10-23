@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""rofi script-mode backend for Proton Pass (pass-cli). Entry point."""
+"""Launch pass-tui from a source checkout (no install needed)."""
 
 import os
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 for _candidate in (
-    os.environ.get("PASS_ROFI_SRC"),
+    os.environ.get("PASS_TUI_SRC"),
     os.path.join(_HERE, "..", "src"),
 ):
-    if _candidate and os.path.isdir(os.path.join(_candidate, "pass_rofi")):
+    if _candidate and os.path.isdir(os.path.join(_candidate, "pass_tui")):
         sys.path.insert(0, _candidate)
         break
 
-from pass_rofi.cli import main
+from pass_tui.cli import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

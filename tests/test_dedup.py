@@ -1,5 +1,5 @@
-from pass_rofi.dedup import dedup_refs, display_duplicate_groups
-from pass_rofi.models import ItemRef
+from pass_tui.dedup import dedup_refs, display_duplicate_groups
+from pass_tui.models import ItemRef
 
 
 def ref(share="s1", item="i1", title="GitHub", urls=("https://github.com",), vault="Personal", uuid=""):
