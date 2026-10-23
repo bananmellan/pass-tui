@@ -93,7 +93,8 @@ def run(argv, env, capsys, client=None, clipboard=None):
     return rc, out
 
 
-def test_initial_lists_cached_items_with_info(env, capsys, tmp_path):
+def test_initial_list_is_empty_until_query(env, capsys, tmp_path):
+    """Initial launch shows no items, only a permanent hint row."""
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     dump_cache([ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))], cache_dir / CACHE_NAME)
@@ -105,11 +106,104 @@ def test_initial_lists_cached_items_with_info(env, capsys, tmp_path):
     assert any(line.startswith("\x00prompt\x1f") for line in lines)
     assert cli_mod.REFRESH_ROW in lines
     item_lines = [line for line in lines if line.startswith("item\x1f")]
+    assert item_lines == []
+    hint_lines = [line for line in lines if "nonselectable" in line and "permanent" in line]
+    assert len(hint_lines) == 1
+    assert "Type to search" in hint_lines[0]
+
+
+def test_custom_input_empty_query_lists_all_items_with_info(env, capsys, tmp_path):
+    """Ctrl+Return on an empty prompt lists every cached item."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    dump_cache([ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))], cache_dir / CACHE_NAME)
+    rc, out = run([""], dict(env, ROFI_RETV="2"), capsys)
+    assert rc == 0
+    lines = out.splitlines()
+    assert cli_mod.REFRESH_ROW in lines
+    item_lines = [line for line in lines if line.startswith("item\x1f")]
     assert any("GitHub" in line for line in item_lines)
     assert any("Bank" in line for line in item_lines)
     assert any("\x00display\x1f" in line and "<b>GitHub</b>" in line for line in item_lines)
     assert any("\x1fmeta\x1f" in line and "GitHub" in line for line in item_lines)
     assert any("\x1finfo\x1fitem\x1fs1\x1fi1" in line for line in item_lines)
+    assert "2 items" in out
+
+
+def test_custom_input_query_filters_items(env, capsys, tmp_path):
+    """Ctrl+Return with a query lists only matching items."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    dump_cache(
+        [
+            ref(),
+            ref("s1", "i2", "Bank", ("https://bank.example.com",)),
+            ref("s1", "i3", "GitLab", ("https://gitlab.com",)),
+        ],
+        cache_dir / CACHE_NAME,
+    )
+    rc, out = run(["git"], dict(env, ROFI_RETV="2"), capsys)
+    assert rc == 0
+    item_lines = [line for line in out.splitlines() if line.startswith("item\x1f")]
+    assert len(item_lines) == 2
+    assert any("GitHub" in line for line in item_lines)
+    assert any("GitLab" in line for line in item_lines)
+    assert "Bank" not in out
+    assert "2 matches for &#x27;git&#x27;" in out
+
+
+def test_custom_input_query_matches_urls_and_vault(env, capsys, tmp_path):
+    """The query matches against urls and vault name, not just the title."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    dump_cache(
+        [
+            ref(),
+            ref("s1", "i2", "Bank", ("https://bank.example.com",)),
+            ref("s1", "i3", "Other", ("https://example.com",), "Work"),
+        ],
+        cache_dir / CACHE_NAME,
+    )
+    rc, out = run(["bank.example"], dict(env, ROFI_RETV="2"), capsys)
+    assert "Bank" in out
+    assert "GitHub" not in out
+    capsys.readouterr()
+    rc, out = run(["work"], dict(env, ROFI_RETV="2"), capsys)
+    assert "Other" in out
+    assert "GitHub" not in out
+
+
+def test_custom_input_no_rows_in_list_argv_is_empty(env, capsys, tmp_path):
+    """RETV 2 with no argv at all (defensive) still lists all items."""
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    rc, out = run([], dict(env, ROFI_RETV="2"), capsys)
+    assert rc == 0
+    assert "GitHub" in out
+
+
+def test_filter_items_matches_title_case_insensitive(env):
+    refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
+    assert [r.title for r in cli_mod._filter_items(refs, "GIT")] == ["GitHub"]
+    assert [r.title for r in cli_mod._filter_items(refs, "bank")] == ["Bank"]
+
+
+def test_filter_items_all_tokens_must_match(env):
+    refs = [
+        ref(),
+        ref("s1", "i2", "Bank", ("https://bank.example.com",)),
+    ]
+    # Both tokens present in one item's haystack -> match.
+    assert [r.title for r in cli_mod._filter_items(refs, "bank example")] == ["Bank"]
+    # Tokens split across items -> no match (AND semantics).
+    assert cli_mod._filter_items(refs, "git bank") == []
+
+
+def test_filter_items_empty_or_whitespace_query_returns_all(env):
+    refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
+    assert cli_mod._filter_items(refs, "") == refs
+    assert cli_mod._filter_items(refs, "   ") == refs
 
 
 def test_initial_rebuilds_when_cache_missing(env, capsys, monkeypatch):
@@ -119,8 +213,12 @@ def test_initial_rebuilds_when_cache_missing(env, capsys, monkeypatch):
     client.list_all_items = lambda: [ref()]
     rc, out = run([], env, capsys, client=client)
     assert rc == 0
-    assert "GitHub" in out
+    assert "\x00prompt\x1fProton Pass" in out.splitlines()
     assert (tmp_path_cache(env) / CACHE_NAME).exists()
+    # The list itself is lazy; searching after the rebuild shows the item.
+    capsys.readouterr()
+    rc, out = run([""], dict(env, ROFI_RETV="2"), capsys, client=client)
+    assert "GitHub" in out
 
 
 def tmp_path_cache(env):
@@ -189,13 +287,14 @@ def test_initial_clipboard_multiple_matches_lists_them(env, capsys):
     assert not client.view_calls
 
 
-def test_initial_clipboard_no_match_shows_full_list(env, capsys):
+def test_initial_clipboard_no_match_shows_lazy_list(env, capsys):
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
     rc, out = run([], env, capsys, clipboard=FakeClipboard("https://unrelated.dev/page"))
     assert cli_mod.REFRESH_ROW in out
-    assert "GitHub" in out
+    assert "Type to search" in out
+    assert not [line for line in out.splitlines() if line.startswith("item\x1f")]
 
 
 def test_initial_clipboard_non_url_ignored(env, capsys):
@@ -203,6 +302,9 @@ def test_initial_clipboard_non_url_ignored(env, capsys):
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
     rc, out = run([], env, capsys, clipboard=FakeClipboard("my password is hunter2"))
+    assert "Type to search" in out
+    capsys.readouterr()
+    rc, out = run([""], dict(env, ROFI_RETV="2"), capsys, clipboard=FakeClipboard("my password is hunter2"))
     assert "GitHub" in out
 
 
@@ -213,7 +315,7 @@ def test_initial_binary_clipboard_does_not_crash(env, capsys):
     dump_cache([ref()], cache_dir / CACHE_NAME)
     rc, out = run([], env, capsys, clipboard=FakeClipboard("\ufffd\x89PNG\ufffd"))
     assert rc == 0
-    assert "GitHub" in out
+    assert "Type to search" in out
 
 
 def test_clipboard_match_runs_even_without_recent_copy(env, capsys):
@@ -369,6 +471,10 @@ def test_back_to_list_reads_cache_without_rebuild(env, capsys, monkeypatch):
     capsys.readouterr()
     rc, out = run([], dict(env, ROFI_RETV="10"), capsys, client=client)
     assert rc == 0
+    assert "Type to search" in out
+    capsys.readouterr()
+    rc, out = run(["git"], dict(env, ROFI_RETV="2"), capsys, client=client)
+    assert rc == 0
     assert "GitHub" in out
 
 
@@ -513,6 +619,9 @@ def test_select_refresh_rebuilds(env, capsys, monkeypatch):
     env2 = dict(env, ROFI_RETV="1")
     rc, out = run([cli_mod.REFRESH_ROW], env2, capsys, client=client)
     assert rc == 0
+    assert "Type to search" in out
+    capsys.readouterr()
+    rc, out = run([""], dict(env, ROFI_RETV="2"), capsys, client=client)
     assert "New" in out
     assert "GitHub" in out
 
@@ -533,13 +642,13 @@ def test_custom_keybinding_refreshes(env, capsys, monkeypatch):
     env2 = dict(env, ROFI_RETV="10")
     rc, out = run([], env2, capsys, client=client)
     assert rc == 0
-    assert "GitHub" in out
+    assert "Type to search" in out
     assert "\x00use-hot-keys\x1ftrue" in out
     assert spawned, "stale cache should trigger a background rebuild"
 
 
 def test_custom_keybinding_refresh_failure_still_lists(env, capsys, monkeypatch):
-    """Ctrl+L with a failing pass-cli still returns the (stale) cached list."""
+    """Ctrl+L with a failing pass-cli still returns to the lazy list."""
     monkeypatch.setattr(cli_mod, "_spawn_rebuild", lambda config: None)
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
@@ -552,11 +661,14 @@ def test_custom_keybinding_refresh_failure_still_lists(env, capsys, monkeypatch)
     client.list_all_items = boom
     rc, out = run([], dict(env, ROFI_RETV="10"), capsys, client=client)
     assert rc == 0
+    assert "Type to search" in out
+    capsys.readouterr()
+    rc, out = run(["git"], dict(env, ROFI_RETV="2"), capsys, client=client)
     assert "GitHub" in out
 
 
 def test_custom_keybinding_range_all_refresh(env, capsys, monkeypatch):
-    """Every custom keybinding slot (10-28) resets to the item list."""
+    """Every custom keybinding slot (10-28) resets to the lazy item list."""
     monkeypatch.setattr(cli_mod, "_spawn_rebuild", lambda config: None)
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
@@ -566,7 +678,7 @@ def test_custom_keybinding_range_all_refresh(env, capsys, monkeypatch):
     for retv in ("10", "19", "28"):
         rc, out = run([], dict(env, ROFI_RETV=retv), capsys, client=client)
         assert rc == 0
-        assert "GitHub" in out
+        assert "Type to search" in out
         capsys.readouterr()
 
 
@@ -584,7 +696,7 @@ def test_custom_keybinding_from_fields_stage_returns_to_list(env, capsys, monkey
     rc, out = run([], dict(env, ROFI_RETV="10"), capsys, client=client)
     assert rc == 0
     assert cli_mod.REFRESH_ROW in out
-    assert "GitHub" in out
+    assert "Type to search" in out
 
 
 def test_list_emits_hot_keys_and_markup_headers(env, capsys):

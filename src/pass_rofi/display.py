@@ -46,6 +46,19 @@ def field_row(label: str, info: str) -> str:
     return f"{info}\x00{extras}"
 
 
+def permanent_row(text: str) -> str:
+    """A row that always shows, regardless of the filter text.
+
+    Used for the lazy-search hint: the item list starts empty, so with no
+    rows present the only visible content is this hint. `permanent` makes
+    rofi's token matcher always match it (script_token_match returns 1 for
+    permanent rows), so it stays visible as the user types, and
+    `nonselectable` keeps Enter on it from re-invoking the script.
+    """
+    extras = f"nonselectable{SEP}true{SEP}permanent{SEP}true"
+    return f"{escape(text)}\x00{extras}"
+
+
 def parse_info(row: str) -> tuple[str, ...]:
     """Extract the info payload from a rofi row or selection.
 

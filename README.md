@@ -9,7 +9,12 @@ split into small, testable modules.
 
 ## Features
 
-- Launching `pass-rofi` opens a rofi window listing all items from **all vaults**.
+- Launching `pass-rofi` opens a rofi window listing items from **all vaults**.
+  The list starts **empty** (rofi cannot re-invoke the script per keystroke, so
+  flooding the window with hundreds of rows would make everything sluggish):
+  type to search, and press **Ctrl+Return** to list matches — Ctrl+Return on an
+  empty prompt lists every item. Once listed, rofi live-filters the rows as you
+  keep typing. Ctrl+l returns to the empty search prompt.
 - Items are listed from a local cache (`$XDG_CACHE_HOME/pass-rofi/items.v1.json`)
   containing only **title, item id, share id, urls, vault name and item type** —
   never passwords, notes or other field values. The rebuild runs
@@ -50,7 +55,8 @@ split into small, testable modules.
   relaunch, you get the regular list. Merely opening an item never arms this.
 - Search works on title, urls and vault name: each row carries a `meta`
   property with the searchable text (rofi only token-matches the entry text,
-  which is an opaque id token).
+  which is an opaque id token). The Ctrl+Return search in the script mirrors
+  this with the same case-insensitive token match.
 - `Ctrl+l` (rofi custom keybinding 1, enabled via the script-mode
   `use-hot-keys` option) goes back to / refreshes the item list; the first
   row ("🔄 Refresh item list") forces a synchronous rebuild.
