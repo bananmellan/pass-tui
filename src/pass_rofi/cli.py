@@ -49,7 +49,7 @@ def _spawn_rebuild(config: Config) -> None:
 
 
 def _show_item_list(cache: Cache, state: StateStore, host_filter: str = "") -> None:
-    refs = cache.get()
+    refs = cache.load()
     state.set_stage(rofi_proto.STAGE_LIST)
     print(rofi_proto.mode_option("use-hot-keys", "true"))
     print(rofi_proto.mode_option("markup-rows", "true"))
@@ -70,7 +70,7 @@ def _open_item(cache: Cache, state: StateStore, client: PassCli, ref: ItemRef) -
     if not labels:
         return False
     state.set_stage(rofi_proto.STAGE_FIELDS)
-    state.set_last_copied(ref)
+    state.set_open_item(ref)
     print(rofi_proto.mode_option("use-hot-keys", "true"))
     print(rofi_proto.mode_option("markup-rows", "true"))
     print(rofi_proto.mode_option("prompt", ref.title))
@@ -106,6 +106,38 @@ def _copy_field(
         _debug_log(state.dir, f"copy failed: {exc}")
         return
     state.set_last_copied(ref)
+    state.clear_clip_marker()
+
+
+def _clipboard_matches(
+    config: Config,
+    cache: Cache,
+    state: StateStore,
+    client: PassCli,
+    clipboard: Clipboard,
+) -> bool:
+    """Clipboard-URL matching. Returns True if the launch was handled."""
+    clip = clipboard.read()[:2048]
+    host = extract_host(clip)
+    if not host:
+        return False
+    marker = clipboard_marker(clip)
+    if marker == state.get_clip_marker():
+        return False
+    state.set_clip_marker(marker)
+    cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
+    matches = match_host(cache.load(), host)
+    if len(matches) == 1:
+        _open_item(cache, state, client, matches[0])
+        return True
+    if len(matches) > 1:
+        state.set_stage(rofi_proto.STAGE_LIST)
+        print(rofi_proto.mode_option("use-hot-keys", "true"))
+        print(rofi_proto.mode_option("markup-rows", "true"))
+        print(rofi_proto.mode_option("prompt", f"Proton Pass ({host})"))
+        print("\n".join(item_row(ref) for ref in matches))
+        return True
+    return False
 
 
 def _initial(
@@ -116,6 +148,7 @@ def _initial(
     clipboard: Clipboard,
 ) -> None:
     now = time.time()
+
     last = state.get_last_copied()
     if last is not None:
         age = state.last_copy_age(now)
@@ -124,27 +157,25 @@ def _initial(
                 return
         state.clear_last_copied()
 
-    clip = clipboard.read()[:2048]
-    host = extract_host(clip)
-    if host:
-        marker = clipboard_marker(clip)
-        if marker != state.get_clip_marker():
-            state.set_clip_marker(marker)
-            cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
-            matches = match_host(cache.get(), host)
-            if len(matches) == 1:
-                _open_item(cache, state, client, matches[0])
-                return
-            if len(matches) > 1:
-                state.set_stage(rofi_proto.STAGE_LIST)
-                print(rofi_proto.mode_option("use-hot-keys", "true"))
-                print(rofi_proto.mode_option("markup-rows", "true"))
-                print(rofi_proto.mode_option("prompt", f"Proton Pass ({host})"))
-                print("\n".join(item_row(ref) for ref in matches))
-                return
+    if _clipboard_matches(config, cache, state, client, clipboard):
+        return
 
     cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
-    _show_item_list(cache, state)
+    refs = cache.get()
+    if not refs:
+        try:
+            cache.rebuild()
+        except PassCliError as exc:
+            _debug_log(cache.path.parent, f"initial rebuild failed: {exc}")
+        refs = cache.load()
+    state.set_stage(rofi_proto.STAGE_LIST)
+    print(rofi_proto.mode_option("use-hot-keys", "true"))
+    print(rofi_proto.mode_option("markup-rows", "true"))
+    print(rofi_proto.mode_option("prompt", "Proton Pass"))
+    print(REFRESH_ROW)
+    rows = [item_row(ref) for ref in refs]
+    if rows:
+        print("\n".join(rows))
 
 
 def _on_select(
@@ -157,6 +188,7 @@ def _on_select(
     info: str,
 ) -> None:
     if selected == REFRESH_ROW:
+        state.set_open_item(None)
         try:
             cache.rebuild()
         except PassCliError as exc:
@@ -167,28 +199,30 @@ def _on_select(
     parts = parse_info(selected) or parse_info(info)
     if state.get_stage() == rofi_proto.STAGE_FIELDS:
         label = parts[0] if parts else selected.split("\x00", 1)[0]
-        last = state.get_last_copied()
+        last = state.get_open_item() or state.get_last_copied()
         if last is not None:
             _copy_field(state, client, clipboard, last, label)
         return
 
     if len(parts) == 3 and parts[0] == "item":
-        refs = cache.get()
+        refs = cache.load()
         for ref in refs:
             if ref.share_id == parts[1] and ref.item_id == parts[2]:
                 if _open_item(cache, state, client, ref):
                     return
                 break
+        state.set_open_item(None)
         _show_item_list(cache, state)
         return
 
     if selected:
         stripped = selected.split("\x00", 1)[0]
-        refs = [ref for ref in cache.get() if ref.title == stripped]
+        refs = [ref for ref in cache.load() if ref.title == stripped]
         if refs:
             for ref in refs:
                 if _open_item(cache, state, client, ref):
                     return
+    state.set_open_item(None)
     _show_item_list(cache, state)
 
 
@@ -213,11 +247,8 @@ def run_rofi_mode(
     retv = rofi_proto.retv_from_env(env)
     if rofi_proto.RETV_CUSTOM_KEY_BASE <= retv <= rofi_proto.RETV_CUSTOM_KEY_BASE + 18:
         state.clear_last_copied()
+        state.set_open_item(None)
         state.set_stage(rofi_proto.STAGE_LIST)
-        try:
-            cache.rebuild()
-        except PassCliError as exc:
-            _debug_log(cache_dir, f"hotkey rebuild failed: {exc}")
         cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
         _show_item_list(cache, state)
         return 0

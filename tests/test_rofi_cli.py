@@ -184,6 +184,144 @@ def test_initial_binary_clipboard_does_not_crash(env, capsys):
     assert "GitHub" in out
 
 
+def test_clipboard_match_runs_even_without_recent_copy(env, capsys):
+    """Clipboard URL matching must not be gated on a recent copy."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    from pass_rofi.state import StateStore
+
+    state = StateStore(cache_dir)
+    state.set_last_copied(ref(), timestamp=0)
+    client = FakeClient()
+    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard("https://github.com/login"))
+    assert rc == 0
+    assert client.view_calls and client.view_calls[0].item_id == "i1"
+
+
+def test_clipboard_match_reruns_when_clipboard_changes(env, capsys):
+    """A new clipboard URL re-triggers matching even if the marker was set."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache(
+        [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))],
+        cache_dir / CACHE_NAME,
+    )
+    client = FakeClient()
+    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard("https://github.com"))
+    assert client.view_calls and client.view_calls[0].item_id == "i1"
+    capsys.readouterr()
+    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard("https://bank.example.com"))
+    assert client.view_calls[-1].item_id == "i2"
+
+
+def test_clipboard_match_skipped_when_clipboard_unchanged(env, capsys):
+    """Same clipboard URL twice in a row: second launch shows the full list."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard("https://github.com"))
+    assert client.view_calls
+    capsys.readouterr()
+    client.view_calls.clear()
+    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard("https://github.com"))
+    assert not client.view_calls
+    assert cli_mod.REFRESH_ROW in out
+
+
+def test_copy_clears_clipboard_marker(env, capsys):
+    """After copying a field, the clipboard marker is cleared so the next
+    launch re-evaluates the (now secret-filled) clipboard."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    from pass_rofi.state import StateStore
+
+    state = StateStore(cache_dir)
+    state.set_clip_marker("abc")
+    client = FakeClient()
+    clipboard = FakeClipboard()
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
+    run(["item\x1fs1\x1fi1"], env2, capsys, client=client, clipboard=clipboard)
+    capsys.readouterr()
+    env3 = dict(env, ROFI_RETV="1", ROFI_INFO="password")
+    run(["password"], env3, capsys, client=client, clipboard=clipboard)
+    assert clipboard.written == ["secret"]
+    assert state.get_clip_marker() == ""
+
+
+def test_open_item_does_not_set_last_copied(env, capsys):
+    """Opening an item must not arm the reopen-after-copy window."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    from pass_rofi.state import StateStore
+
+    state = StateStore(cache_dir)
+    client = FakeClient()
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
+    run(["item\x1fs1\x1fi1"], env2, capsys, client=client)
+    assert state.get_last_copied() is None
+    assert state.last_copy_age() is None
+    assert state.get_open_item() == ref()
+
+
+def test_reopen_after_close_without_copy_does_not_happen(env, capsys):
+    """Close without copying, relaunch: full list, not the last open item."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
+    run(["item\x1fs1\x1fi1"], env2, capsys, client=client)
+    capsys.readouterr()
+    client.view_calls.clear()
+    rc, out = run([], env, capsys, client=client)
+    assert rc == 0
+    assert cli_mod.REFRESH_ROW in out
+    assert not client.view_calls
+
+
+def test_back_to_list_reads_cache_without_rebuild(env, capsys, monkeypatch):
+    """Returning to the item list must not hit pass-cli (no TTL refresh)."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    import os
+    import time as time_mod
+
+    old = time_mod.time() - 10_000
+    os.utime(cache_dir / CACHE_NAME, (old, old))
+    client = FakeClient()
+
+    def boom():
+        raise AssertionError("pass-cli must not be called when going back")
+
+    client.list_all_items = boom
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
+    run(["item\x1fs1\x1fi1"], env2, capsys, client=client)
+    capsys.readouterr()
+    rc, out = run([], dict(env, ROFI_RETV="10"), capsys, client=client)
+    assert rc == 0
+    assert "GitHub" in out
+
+
+def test_field_copy_uses_open_item(env, capsys):
+    """Copying a field resolves the item from open-item state."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+    clipboard = FakeClipboard()
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
+    run(["item\x1fs1\x1fi1"], env2, capsys, client=client, clipboard=clipboard)
+    capsys.readouterr()
+    env3 = dict(env, ROFI_RETV="1", ROFI_INFO="username")
+    run(["username"], env3, capsys, client=client, clipboard=clipboard)
+    assert clipboard.written == ["me"]
+
+
 def test_select_item_by_info_opens_fields(env, capsys):
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
@@ -315,19 +453,24 @@ def test_select_refresh_rebuilds(env, capsys, monkeypatch):
 
 
 def test_custom_keybinding_refreshes(env, capsys, monkeypatch):
+    """Ctrl+L triggers a background rebuild when the cache is stale."""
     spawned = []
     monkeypatch.setattr(cli_mod, "_spawn_rebuild", lambda config: spawned.append(config))
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
+    import os
+    import time as time_mod
+
+    old = time_mod.time() - 10_000
+    os.utime(cache_dir / CACHE_NAME, (old, old))
     client = FakeClient()
-    client.list_all_items = lambda: [ref(), ref("s1", "i9", "New", ())]
     env2 = dict(env, ROFI_RETV="10")
     rc, out = run([], env2, capsys, client=client)
     assert rc == 0
     assert "GitHub" in out
-    assert "New" in out
     assert "\x00use-hot-keys\x1ftrue" in out
+    assert spawned, "stale cache should trigger a background rebuild"
 
 
 def test_custom_keybinding_refresh_failure_still_lists(env, capsys, monkeypatch):

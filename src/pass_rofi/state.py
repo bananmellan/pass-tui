@@ -17,6 +17,7 @@ class StateStore:
         self.stage_path = cache_dir / "stage"
         self.last_item_path = cache_dir / "lastitem.json"
         self.stamp_path = cache_dir / "copy.stamp"
+        self.open_item_path = cache_dir / "open-item.json"
         self.clip_marker_path = cache_dir / "clip.marker"
 
     def _write(self, path: Path, data: bytes) -> None:
@@ -76,6 +77,25 @@ class StateStore:
             except OSError:
                 pass
 
+    def get_open_item(self) -> ItemRef | None:
+        try:
+            data = json.loads(self.open_item_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        try:
+            return ItemRef.from_dict(data)
+        except ValueError:
+            return None
+
+    def set_open_item(self, ref: ItemRef | None) -> None:
+        if ref is None:
+            try:
+                self.open_item_path.unlink()
+            except OSError:
+                pass
+            return
+        self._write(self.open_item_path, json.dumps(ref.to_dict()).encode("utf-8"))
+
     def get_clip_marker(self) -> str:
         try:
             return self.clip_marker_path.read_text(encoding="utf-8").strip()
@@ -84,3 +104,9 @@ class StateStore:
 
     def set_clip_marker(self, marker: str) -> None:
         self._write(self.clip_marker_path, marker.encode("utf-8"))
+
+    def clear_clip_marker(self) -> None:
+        try:
+            self.clip_marker_path.unlink()
+        except OSError:
+            pass

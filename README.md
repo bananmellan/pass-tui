@@ -21,7 +21,12 @@ split into small, testable modules.
 - If the clipboard contains an `http(s)://` URL (`wl-paste`, `xclip` or `xsel`),
   items whose cached urls contain the clipboard hostname are surfaced: a single
   match opens it directly, multiple matches are listed, zero matches falls back
-  to the full list. URL matching only ever reads the cache.
+  to the full list. URL matching only ever reads the cache, and runs on every
+  launch where the clipboard content changed since the last launch (copying a
+  field clears the marker, since the clipboard then holds a secret).
+- Going back to the item list (Ctrl+l, unknown selection, refresh row) renders
+  straight from the cache and never blocks on `pass-cli`; a stale cache triggers
+  a background rebuild instead.
 - Rows are rendered with pango markup (bold title, dimmed url/vault) via the
   script-mode `markup-rows` option. The row's *entry text* is an opaque token
   (`item<US><share_id><US><item_id>`); the human-readable text is attached with
@@ -33,8 +38,10 @@ split into small, testable modules.
 - Selecting an item fetches its secrets on demand (`pass-cli item view`) and
   shows a field menu; selecting a field copies its value to the clipboard.
   TOTP codes are generated via `pass://<share>/<item>/totp`.
-- After copying, relaunching within `PASS_ROFI_REOPEN_SECONDS` (default 20)
-  reopens the same item's field menu.
+- After **copying** a field, relaunching within `PASS_ROFI_REOPEN_SECONDS`
+  (default 20) reopens the same item's field menu. Merely opening an item and
+  closing rofi does not arm this — the reopen state is separate from the
+  currently open item.
 - Search works on title, urls and vault name: each row carries a `meta`
   property with the searchable text (rofi only token-matches the entry text,
   which is an opaque id token).

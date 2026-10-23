@@ -38,6 +38,23 @@ def test_clip_marker(tmp_path):
     assert state.get_clip_marker() == ""
     state.set_clip_marker("abc")
     assert StateStore(tmp_path).get_clip_marker() == "abc"
+    state.clear_clip_marker()
+    assert state.get_clip_marker() == ""
+
+
+def test_open_item_roundtrip(tmp_path):
+    state = StateStore(tmp_path)
+    assert state.get_open_item() is None
+    state.set_open_item(ref())
+    assert StateStore(tmp_path).get_open_item() == ref()
+    state.set_open_item(None)
+    assert state.get_open_item() is None
+
+
+def test_open_item_not_set_by_last_copied(tmp_path):
+    state = StateStore(tmp_path)
+    state.set_last_copied(ref())
+    assert state.get_open_item() is None
 
 
 def test_state_files_not_world_readable(tmp_path):
