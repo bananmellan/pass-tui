@@ -44,6 +44,13 @@ split into small, testable modules.
   the row `display` property, searchable text with `meta`, and the token is
   mirrored into `info` (`ROFI_INFO`), so selection resolves the exact item
   even with duplicate titles.
+- Items are deduped by `item_id` (globally unique in Proton Pass), so a shared
+  item visible through two vaults appears once. Email-alias items are the one
+  exception: Proton can hold two alias items for the same address (e.g. one
+  created via SimpleLogin, one migrated), so aliases are additionally deduped
+  by their lowercased address. Selecting an alias shows its address as a
+  copyable `email:` field (the structural fields — mailboxes, prefix/suffix,
+  flags — are hidden).
 - Custom keybindings (`Ctrl+l` etc.) are enabled via the script-mode
   `use-hot-keys` option; without it rofi swallows them in script mode.
 - Selecting an item fetches its secrets on demand (`pass-cli item view`) and

@@ -199,6 +199,81 @@ def test_list_all_items_returns_deterministic_vault_order():
     assert [i.title for i in items] == ["FromS1", "FromS2"]
 
 
+def test_parse_items_extracts_alias_address_from_prefix_suffix():
+    """An Alias item's address is <prefix>@<suffix> from content.content.Alias."""
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "content": {
+                    "title": "actress_revolving098@smail.me",
+                    "note": "",
+                    "content": {
+                        "Alias": {
+                            "alias_prefix": "actress_revolving098",
+                            "alias_suffix": "smail.me",
+                            "mailboxes": [{"email": "me@proton.me"}],
+                            "enabled": True,
+                        }
+                    },
+                },
+            }
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert len(items) == 1
+    assert items[0].item_type == "Alias"
+    assert items[0].title == "actress_revolving098@smail.me"
+    # The address is derivable metadata, not a secret — it is the title.
+    assert "password" not in items[0].to_dict()
+
+
+def test_parse_items_alias_with_precomposed_email_field():
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "content": {
+                    "title": "shopping.abc@duck.com",
+                    "content": {
+                        "Alias": {
+                            "email": "shopping.abc@duck.com",
+                            "mailboxes": [],
+                        }
+                    },
+                },
+            }
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert items[0].item_type == "Alias"
+
+
+def test_parse_items_alias_camelcase_keys():
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "content": {
+                    "title": "x@y.z",
+                    "content": {
+                        "Alias": {
+                            "aliasPrefix": "x",
+                            "aliasSuffix": "y.z",
+                            "mailboxes": [],
+                        }
+                    },
+                },
+            }
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert items[0].item_type == "Alias"
+
+
 def test_parse_items_extracts_metadata_only():
     items = parse_items(json.loads(ITEMS_S1), Vault("s1", "Personal"))
     assert len(items) == 1

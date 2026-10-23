@@ -124,3 +124,83 @@ def test_field_labels_empty_login_with_no_extra_fields_has_no_labels():
         }
     }
     assert field_labels(data) == []
+
+
+ALIAS_VIEW = {
+    "item": {
+        "content": {
+            "title": "actress_revolving098@smail.me",
+            "note": "created for newsletters",
+            "content": {
+                "Alias": {
+                    "alias_prefix": "actress_revolving098",
+                    "alias_suffix": "smail.me",
+                    "mailboxes": [{"email": "me@proton.me", "name": "Main"}],
+                    "enabled": True,
+                    "block_reply": False,
+                }
+            },
+        }
+    }
+}
+
+
+def test_field_labels_alias_item_exposes_address_and_hides_structure():
+    labels = field_labels(ALIAS_VIEW)
+    # The address is the copyable payload.
+    assert "email: actress_revolving098@smail.me" in labels
+    # Structural keys are not offered as copyable fields.
+    assert "alias_prefix" not in labels
+    assert "alias_suffix" not in labels
+    assert "mailboxes" not in labels
+    assert "enabled" not in labels
+    assert "block_reply" not in labels
+    # The note is still there.
+    assert "note" in labels
+
+
+def test_field_value_alias_address_returns_address():
+    assert field_value(ALIAS_VIEW, "email: actress_revolving098@smail.me") == "actress_revolving098@smail.me"
+
+
+def test_field_labels_alias_with_precomposed_email():
+    data = {
+        "item": {
+            "content": {
+                "title": "shopping.abc@duck.com",
+                "content": {
+                    "Alias": {
+                        "email": "shopping.abc@duck.com",
+                        "mailboxes": [],
+                    }
+                },
+            }
+        }
+    }
+    labels = field_labels(data)
+    assert "email: shopping.abc@duck.com" in labels
+    assert field_value(data, "email: shopping.abc@duck.com") == "shopping.abc@duck.com"
+
+
+def test_field_labels_login_with_email_field_still_shows_email():
+    """A Login item's 'email' section field is a normal copyable field."""
+    data = {
+        "item": {
+            "content": {
+                "title": "GitHub",
+                "content": {
+                    "Login": {
+                        "email": "me@example.com",
+                        "username": "me",
+                        "password": "secret",
+                        "urls": [],
+                    }
+                },
+            }
+        }
+    }
+    labels = field_labels(data)
+    assert "email" in labels
+    assert field_value(data, "email") == "me@example.com"
+    # No alias-style "email: ..." label for a Login.
+    assert not any(label.startswith("email: ") for label in labels)
