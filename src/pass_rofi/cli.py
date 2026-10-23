@@ -172,18 +172,22 @@ def _initial(
 ) -> None:
     now = time.time()
 
+    # Reopen-after-copy is a one-shot: it only applies to the launch
+    # immediately following a copy. Clear it on every program start so a
+    # later launch (where nothing was copied in between) behaves normally.
     last = state.get_last_copied()
+    state.clear_last_copied()
     if last is not None:
-        age = state.last_copy_age(now)
+        last_ref, copied_at = last
+        age = now - copied_at
         _verbose(
             config,
             cache.path.parent,
-            f"last copied item {last.title!r} age={age}",
+            f"last copied item {last_ref.title!r} age={age}",
         )
-        if age is not None and age < config.reopen_seconds:
-            if _open_item(cache, state, client, last):
+        if age < config.reopen_seconds:
+            if _open_item(cache, state, client, last_ref):
                 return
-        state.clear_last_copied()
     else:
         _verbose(config, cache.path.parent, "no last-copied item")
 
@@ -230,9 +234,12 @@ def _on_select(
     parts = parse_info(selected) or parse_info(info)
     if state.get_stage() == rofi_proto.STAGE_FIELDS:
         label = parts[0] if parts else selected.split("\x00", 1)[0]
-        last = state.get_open_item() or state.get_last_copied()
-        if last is not None:
-            _copy_field(state, client, clipboard, last, label)
+        open_item = state.get_open_item()
+        if open_item is None:
+            last = state.get_last_copied()
+            open_item = last[0] if last else None
+        if open_item is not None:
+            _copy_field(state, client, clipboard, open_item, label)
         return
 
     if len(parts) == 3 and parts[0] == "item":

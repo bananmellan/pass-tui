@@ -42,9 +42,9 @@ split into small, testable modules.
   shows a field menu; selecting a field copies its value to the clipboard.
   TOTP codes are generated via `pass://<share>/<item>/totp`.
 - After **copying** a field, relaunching within `PASS_ROFI_REOPEN_SECONDS`
-  (default 20) reopens the same item's field menu. Merely opening an item and
-  closing rofi does not arm this — the reopen state is separate from the
-  currently open item.
+  (default 20) reopens the same item's field menu — once. The reopen memory is
+  cleared on every program start, so if you close rofi without copying and
+  relaunch, you get the regular list. Merely opening an item never arms this.
 - Search works on title, urls and vault name: each row carries a `meta`
   property with the searchable text (rofi only token-matches the entry text,
   which is an opaque id token).

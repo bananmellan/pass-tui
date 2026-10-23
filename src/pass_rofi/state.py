@@ -43,13 +43,23 @@ class StateStore:
     def set_stage(self, stage: str) -> None:
         self._write(self.stage_path, stage.encode("utf-8"))
 
-    def get_last_copied(self) -> ItemRef | None:
+    def get_last_copied(self) -> tuple[ItemRef, float] | None:
+        """Return (ref, copy timestamp) atomically-ish, or None.
+
+        Reads the stamp first, then the ref: a concurrent set_last_copied
+        always writes the ref before the stamp, so a stamp without a
+        matching ref yields None instead of a half-written pair.
+        """
+        try:
+            stamp = int(self.stamp_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return None
         try:
             data = json.loads(self.last_item_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
         try:
-            return ItemRef.from_dict(data)
+            return ItemRef.from_dict(data), float(stamp)
         except ValueError:
             return None
 
@@ -61,13 +71,6 @@ class StateStore:
             self.stamp_path,
             str(int(timestamp if timestamp is not None else time.time())).encode(),
         )
-
-    def last_copy_age(self, now: float | None = None) -> float | None:
-        try:
-            stamp = int(self.stamp_path.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            return None
-        return (now if now is not None else time.time()) - stamp
 
     def clear_last_copied(self) -> None:
         for path in (self.stamp_path, self.last_item_path):

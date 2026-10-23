@@ -293,7 +293,6 @@ def test_open_item_does_not_set_last_copied(env, capsys):
     env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
     run(["item\x1fs1\x1fi1"], env2, capsys, client=client)
     assert state.get_last_copied() is None
-    assert state.last_copy_age() is None
     assert state.get_open_item() == ref()
 
 
@@ -308,6 +307,42 @@ def test_reopen_after_close_without_copy_does_not_happen(env, capsys):
     capsys.readouterr()
     client.view_calls.clear()
     rc, out = run([], env, capsys, client=client)
+    assert rc == 0
+    assert cli_mod.REFRESH_ROW in out
+    assert not client.view_calls
+
+
+def test_reopen_after_copy_is_one_shot(env, capsys):
+    """Copy, relaunch (reopens the item), close without copying, relaunch
+    again: the remembered item must be gone — full list, not the item."""
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    from pass_rofi.state import StateStore
+
+    state = StateStore(cache_dir)
+    client = FakeClient()
+    clipboard = FakeClipboard()
+    # Open the item, then copy a field.
+    env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
+    run(["item\x1fs1\x1fi1"], env2, capsys, client=client, clipboard=clipboard)
+    capsys.readouterr()
+    env3 = dict(env, ROFI_RETV="1", ROFI_INFO="password")
+    run(["password"], env3, capsys, client=client, clipboard=clipboard)
+    assert clipboard.written == ["secret"]
+    assert state.get_last_copied() is not None
+    capsys.readouterr()
+    # First relaunch: reopens the copied item.
+    client.view_calls.clear()
+    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard(""))
+    assert rc == 0
+    assert client.view_calls and client.view_calls[0].item_id == "i1"
+    # The reopen memory is consumed by that launch.
+    assert state.get_last_copied() is None
+    capsys.readouterr()
+    # Second relaunch (nothing copied in between): plain list.
+    client.view_calls.clear()
+    rc, out = run([], env, capsys, client=client, clipboard=FakeClipboard(""))
     assert rc == 0
     assert cli_mod.REFRESH_ROW in out
     assert not client.view_calls
