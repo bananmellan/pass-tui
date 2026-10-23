@@ -38,9 +38,9 @@ split into small, testable modules.
 - Search works on title, urls and vault name: each row carries a `meta`
   property with the searchable text (rofi only token-matches the entry text,
   which is an opaque id token).
-- `Ctrl+l`, `Alt+b` or `BackSpace` (rofi custom keybinding 1, enabled via the
-  script-mode `use-hot-keys` option) goes back to / refreshes the item list;
-  the first row ("🔄 Refresh item list") forces a synchronous rebuild.
+- `Ctrl+l` (rofi custom keybinding 1, enabled via the script-mode
+  `use-hot-keys` option) goes back to / refreshes the item list; the first
+  row ("🔄 Refresh item list") forces a synchronous rebuild.
 
 ## Requirements
 

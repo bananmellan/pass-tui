@@ -304,35 +304,62 @@ def test_select_refresh_rebuilds(env, capsys, monkeypatch):
     assert "GitHub" in out
 
 
-def test_custom_keybinding_refreshes(env, capsys):
+def test_custom_keybinding_refreshes(env, capsys, monkeypatch):
+    spawned = []
+    monkeypatch.setattr(cli_mod, "_spawn_rebuild", lambda config: spawned.append(config))
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+    client.list_all_items = lambda: [ref(), ref("s1", "i9", "New", ())]
     env2 = dict(env, ROFI_RETV="10")
-    rc, out = run([], env2, capsys)
+    rc, out = run([], env2, capsys, client=client)
     assert rc == 0
     assert "GitHub" in out
+    assert "New" in out
     assert "\x00use-hot-keys\x1ftrue" in out
 
 
-def test_custom_keybinding_range_all_refresh(env, capsys):
-    """Every custom keybinding slot (10-28) resets to the item list."""
+def test_custom_keybinding_refresh_failure_still_lists(env, capsys, monkeypatch):
+    """Ctrl+L with a failing pass-cli still returns the (stale) cached list."""
+    monkeypatch.setattr(cli_mod, "_spawn_rebuild", lambda config: None)
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+
+    def boom():
+        raise PassCliError("offline")
+
+    client.list_all_items = boom
+    rc, out = run([], dict(env, ROFI_RETV="10"), capsys, client=client)
+    assert rc == 0
+    assert "GitHub" in out
+
+
+def test_custom_keybinding_range_all_refresh(env, capsys, monkeypatch):
+    """Every custom keybinding slot (10-28) resets to the item list."""
+    monkeypatch.setattr(cli_mod, "_spawn_rebuild", lambda config: None)
+    cache_dir = tmp_path_cache(env)
+    cache_dir.mkdir(parents=True)
+    dump_cache([ref()], cache_dir / CACHE_NAME)
+    client = FakeClient()
+    client.list_all_items = lambda: [ref()]
     for retv in ("10", "19", "28"):
-        rc, out = run([], dict(env, ROFI_RETV=retv), capsys)
+        rc, out = run([], dict(env, ROFI_RETV=retv), capsys, client=client)
         assert rc == 0
         assert "GitHub" in out
         capsys.readouterr()
 
 
-def test_custom_keybinding_from_fields_stage_returns_to_list(env, capsys):
+def test_custom_keybinding_from_fields_stage_returns_to_list(env, capsys, monkeypatch):
     """Ctrl+L while in the field menu goes back to the item list."""
+    monkeypatch.setattr(cli_mod, "_spawn_rebuild", lambda config: None)
     cache_dir = tmp_path_cache(env)
     cache_dir.mkdir(parents=True)
     dump_cache([ref()], cache_dir / CACHE_NAME)
     client = FakeClient()
+    client.list_all_items = lambda: [ref()]
     env2 = dict(env, ROFI_RETV="1", ROFI_INFO="item\x1fs1\x1fi1")
     run(["item\x1fs1\x1fi1"], env2, capsys, client=client)
     capsys.readouterr()

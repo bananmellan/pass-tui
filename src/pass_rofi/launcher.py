@@ -42,7 +42,7 @@ def build_rofi_argv(script: str) -> list[str]:
         "rofi",
         "-normal-window",
         "-kb-custom-1",
-        "Ctrl+l,Alt+b,BackSpace",
+        "Ctrl+l",
         "-kb-mode-complete",
         "",
         "-modi",

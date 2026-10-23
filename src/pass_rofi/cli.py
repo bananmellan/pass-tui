@@ -214,6 +214,10 @@ def run_rofi_mode(
     if rofi_proto.RETV_CUSTOM_KEY_BASE <= retv <= rofi_proto.RETV_CUSTOM_KEY_BASE + 18:
         state.clear_last_copied()
         state.set_stage(rofi_proto.STAGE_LIST)
+        try:
+            cache.rebuild()
+        except PassCliError as exc:
+            _debug_log(cache_dir, f"hotkey rebuild failed: {exc}")
         cache.ensure_fresh_async(lambda c: _spawn_rebuild(config))
         _show_item_list(cache, state)
         return 0
