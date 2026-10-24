@@ -45,6 +45,20 @@ class AuthAborted(Exception):
     """The user aborted a prompt (Esc/Ctrl-c/EOF)."""
 
 
+def _say(stream, text: str) -> None:
+    """Emit a gate message.
+
+    *stream* is either a file-like object (headless: tests, non-TUI
+    runs) or a callable (the splash UI, which renders the message as
+    its status line).
+    """
+    if callable(stream):
+        stream(text)
+    else:
+        print(text, file=stream)
+
+
+
 def prompt_for_token(
     stream=None,
     input_fn: Callable[[str], str] = getpass.getpass,
@@ -113,16 +127,22 @@ def ensure_authenticated(
     prompt_lock: Callable[[], str] = prompt_for_lock_code,
     stream=None,
     log: Callable[[str], None] | None = None,
+    state: str | None = None,
 ) -> bool:
     """Make sure pass-cli has a usable (unlocked) session.
 
     Returns True when pass-tui may start. Returns False when a login or
     unlock attempt failed (the caller should exit with an error
     message). Raises AuthAborted when the user aborts a prompt.
+
+    ``state`` may carry a pre-probed session state (the splash probes
+    in a worker thread so the boot UI stays responsive); when None the
+    state is probed here.
     """
     stream = stream or sys.stderr
     log = log or (lambda msg: None)
-    state = client.session_state()
+    if state is None:
+        state = client.session_state()
     if state == SESSION_UNLOCKED:
         log("pass-cli session valid")
         return True
@@ -133,17 +153,17 @@ def ensure_authenticated(
             try:
                 client.unlock_session(code)
             except SessionLockedError:
-                print("pass-tui: wrong lock code, try again.", file=stream)
+                _say(stream, "pass-tui: wrong lock code, try again.")
                 log("wrong lock code")
                 continue
             except PassCliError as exc:
-                print(f"pass-tui: unlock failed: {exc}", file=stream)
+                _say(stream, f"pass-tui: unlock failed: {exc}")
                 log(f"unlock failed: {exc}")
                 return False
             if client.session_state() != SESSION_UNLOCKED:
-                print(
+                _say(
+                    stream,
                     "pass-tui: unlock did not establish a usable session.",
-                    file=stream,
                 )
                 log("unlock succeeded but session check failed")
                 return False
@@ -154,14 +174,14 @@ def ensure_authenticated(
     try:
         client.login_with_token(token)
     except PassCliError as exc:
-        print(f"pass-tui: login failed: {exc}", file=stream)
+        _say(stream, f"pass-tui: login failed: {exc}")
         log(f"login failed: {exc}")
         return False
     if client.session_state() != SESSION_UNLOCKED:
-        print(
+        _say(
+            stream,
             "pass-tui: login did not establish a session "
             "(token invalid or expired?).",
-            file=stream,
         )
         log("login succeeded but session check failed")
         return False
@@ -192,18 +212,12 @@ def setup_session_locks(
         log("session lock already configured")
         return
     log("no session lock configured, prompting to create one")
-    print(
-        "pass-tui: protect this session with a lock code?",
-        file=stream,
-    )
-    print(
+    _say(stream, "pass-tui: protect this session with a lock code?")
+    _say(
+        stream,
         f"It will lock after {config.lock_idle_timeout} s idle and pass-tui will",
-        file=stream,
     )
-    print(
-        f"ask for the code (see {_LOCK_URL}). Ctrl-c to skip.",
-        file=stream,
-    )
+    _say(stream, f"ask for the code (see {_LOCK_URL}). Ctrl-c to skip.")
     try:
         code = prompt_lock()
     except AuthAborted:

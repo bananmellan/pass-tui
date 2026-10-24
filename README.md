@@ -27,9 +27,14 @@ toolkit — just run it from a terminal.
   numbers, ...) are cached as label-only entries (name kept, value dropped),
   so the field menu can list them censored but copying one always fetches the
   value live from pass-cli.
-- Startup is fast: the list renders straight from the cache; when the cache is
-  older than `PASS_TUI_CACHE_TTL` seconds (default 600) a background rebuild is
-  spawned without blocking the UI.
+- Startup shows a splash screen immediately: the session check
+  ("Checking session…") and any lock-code / access-token prompt render
+  inside the UI, so a slow pass-cli never leaves a blank terminal. Esc
+  or Ctrl-c cancels the boot at any point.
+- Startup is fast: the list renders straight from the cache; when the cache
+  is missing or older than `PASS_TUI_CACHE_TTL` seconds (default 600) a
+  background rebuild refreshes it without blocking the UI — the list shows
+  "Reloading items…" until the fresh items land.
 - Navigation is snappy: opening an item and copying a non-sensitive field are
   served entirely from the cache — no pass-cli call. Only copying a sensitive
   field (password, PIN, TOTP, ...) triggers a live `pass-cli item view` /
@@ -213,7 +218,7 @@ src/pass_tui/
   cli.py                 entry point: arg parsing, --rebuild, tty check
   auth.py                startup auth gate: unlocked / locked (PIN) / token login
   app.py                 UI-agnostic controller (screens + key handling)
-  tui.py                 curses rendering and key translation
+  tui.py                 curses rendering, key translation, boot splash
   search.py              live filtering (token substring/subsequence ranking)
   types.py               item-type normalization and list badges
   passcli.py             pass-cli subprocess wrapper + JSON parsing

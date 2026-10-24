@@ -164,6 +164,15 @@ class StubWindow:
     def move(self, y, x):
         self.cursor = (y, x)
 
+    def getch(self):
+        return -1  # curses ERR
+
+    def keypad(self, flag):
+        pass
+
+    def timeout(self, ms):
+        self.timeout_value = ms
+
     def refresh(self):
         self.refreshed += 1
 
@@ -710,3 +719,161 @@ def test_draw_fields_shows_busy_indicator(tmp_path):
 def test_busy_preview_table_covers_slow_keys():
     assert tui._BUSY_PREVIEW["ctrl_r"].startswith("Reloading")
     assert tui._BUSY_PREVIEW["enter"].startswith("Loading")
+
+
+# ------------------------------------------------- busy preview reclaim
+
+
+class _InstantEnterApp:
+    """Stand-in app for the busy-preview reclaim test: handles "enter"
+    instantly (cache hit) and never sets its own busy text."""
+
+    def __init__(self):
+        self.screen = ListScreen(refs=[])
+        self.busy = ""
+        self._started = True
+        self.keys = []
+
+    def handle_key(self, name):
+        self.keys.append(name)
+        return self.screen
+
+    def poll_refresh(self):
+        return None
+
+    def _clamp(self, screen, height):
+        pass
+
+    def field_values(self):
+        return {}
+
+
+def _run_loop_with_keys(stdscr, app, keys):
+    """Drive _loop with scripted getch keys; returns when a key raises
+    QuitRequested or the script is exhausted."""
+    import itertools
+
+    it = iter(keys)
+
+    def fake_getch():
+        try:
+            return next(it)
+        except StopIteration:
+            raise tui.QuitRequested
+
+    stdscr.getch = fake_getch
+    try:
+        tui._loop(stdscr, app)
+    except tui.QuitRequested:
+        pass  # script exhausted: the loop exits via QuitRequested
+
+
+class _FakeCurses:
+    """Patch the curses bits _loop touches so it runs headless."""
+
+    def __enter__(self):
+        import curses
+
+        self._real = (curses.curs_set, curses.has_colors)
+        self._was_ready = tui._COLORS_READY
+        curses.curs_set = lambda *_a, **_k: None
+        curses.has_colors = lambda: False
+        tui._COLORS_READY = False  # _pair() then returns 0 (no curses)
+        return self
+
+    def __exit__(self, *exc):
+        import curses
+
+        curses.curs_set = self._real[0]
+        curses.has_colors = self._real[1]
+        tui._COLORS_READY = self._was_ready
+        return False
+
+
+def test_loop_reclaims_busy_preview_on_instant_enter():
+    """The busy preview shown before a potentially-slow key must not
+    stick when the handler turns out to be instant (cache hit): the
+    loop reclaims it after the handler returns."""
+    app = _InstantEnterApp()
+    win = StubWindow()
+    with _FakeCurses():
+        _run_loop_with_keys(win, app, [10])  # "enter"
+    assert app.keys == ["enter"]
+    assert app.busy == ""
+
+
+def test_loop_keeps_app_busy_when_handler_sets_its_own():
+    """When the handler sets its own busy text (slow operation), the
+    loop must not reclaim it — the app clears it when done."""
+
+    class SlowApp(_InstantEnterApp):
+        def handle_key(self, name):
+            self.busy = "Loading GitHub\u2026"  # app's own indicator
+            return self.screen
+
+    app = SlowApp()
+    win = StubWindow()
+    with _FakeCurses():
+        _run_loop_with_keys(win, app, [10])
+    # Preview was "Loading\u2026"; the app replaced it with its own text,
+    # so the reclaim condition (busy == preview) is false.
+    assert app.busy == "Loading GitHub\u2026"
+
+
+def test_loop_does_not_preview_when_app_already_busy():
+    """No preview is injected while the app is already showing its own
+    busy text (e.g. a background refresh)."""
+    app = _InstantEnterApp()
+    app.busy = "Reloading items\u2026"
+    win = StubWindow()
+    with _FakeCurses():
+        _run_loop_with_keys(win, app, [10])
+    assert app.busy == "Reloading items\u2026"  # untouched
+
+
+def test_loop_polls_background_refresh_each_iteration():
+    """_loop calls app.poll_refresh() every iteration (before drawing)
+    so a background cache rebuild re-renders the list promptly, even
+    while blocked in getch(). With three keys the loop runs 4
+    iterations (3 keys + the final exhausted getch)."""
+
+    class PollApp(_InstantEnterApp):
+        def __init__(self):
+            super().__init__()
+            self.polls = 0
+
+        def poll_refresh(self):
+            self.polls += 1
+            return None
+
+    app = PollApp()
+    win = StubWindow()
+    with _FakeCurses():
+        _run_loop_with_keys(win, app, [ord("a"), ord("b"), 10])
+    assert app.polls == 4
+
+
+def test_loop_redraws_when_refresh_lands():
+    """When poll_refresh returns a screen (background rebuild done),
+    the loop redraws and continues without consuming a key."""
+
+    class RefreshApp(_InstantEnterApp):
+        def __init__(self):
+            super().__init__()
+            self.polls = 0
+
+        def poll_refresh(self):
+            self.polls += 1
+            if self.polls == 1:
+                return self.screen  # refresh landed on first poll
+            return None
+
+    app = RefreshApp()
+    win = StubWindow()
+    with _FakeCurses():
+        _run_loop_with_keys(win, app, [ord("a")])
+    # First iteration: poll returned a screen -> redraw + continue
+    # (no key consumed). Second iteration: poll None, key "a".
+    # Third: script exhausted.
+    assert app.keys == ["a"]
+    assert app.polls >= 2

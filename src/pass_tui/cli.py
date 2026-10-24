@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 
 from .app import App
-from .auth import AuthAborted, ensure_authenticated, setup_session_locks
 from .cache import CACHE_NAME, Cache
 from .clipboard import Clipboard
 from .config import Config
@@ -89,29 +88,27 @@ def run_tui(config: Config | None = None, env=None) -> int:
         # yourself).
         os.environ["PROTON_PASS_LINUX_KEYRING"] = "dbus"
     client = PassCli(config.pass_cli_bin)
-    try:
-        authenticated = ensure_authenticated(
-            client,
-            log=lambda msg: _verbose(config, cache_dir, msg),
-        )
-    except AuthAborted:
-        print("pass-tui: aborted.", file=sys.stderr)
-        return 1
-    if not authenticated:
-        return 1
-    setup_session_locks(
-        client,
-        config,
-        log=lambda msg: _verbose(config, cache_dir, msg),
-    )
-    from .tui import run
 
-    app = build_app(config, client=client)
+    def boot(stdscr):
+        # One curses session for splash + main loop: wrapper tears the
+        # terminal down on return, so the list UI must live inside it.
+        from .tui import _loop, run_splash
+
+        ok, app = run_splash(stdscr, config, client)
+        if not ok or app is None:
+            return 1
+        _loop(stdscr, app)  # app is already started; _loop skips start()
+        return 0
+
+    import curses
+
     try:
-        run(app)
+        rc = curses.wrapper(boot)
     except KeyboardInterrupt:
-        pass
-    return 0
+        return 0
+    if rc:
+        print("pass-tui: aborted.", file=sys.stderr)
+    return rc
 
 
 def run_rebuild(config: Config | None = None, env=None) -> int:

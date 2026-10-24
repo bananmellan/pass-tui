@@ -372,17 +372,31 @@ def _loop(stdscr, app: App) -> None:
     if not app._started:
         app.start()
     while True:
+        # A background cache refresh (stale/missing cache at launch)
+        # re-renders the list as soon as it lands — even while the
+        # loop is blocked in getch().
+        refreshed = app.poll_refresh()
+        if refreshed is not None:
+            _draw(stdscr, app)
+            continue
         _draw(stdscr, app)
+        stdscr.timeout(100)
         try:
             ch = stdscr.getch()
         except KeyboardInterrupt:
             return
+        finally:
+            stdscr.timeout(-1)
         name = _key_name(ch)
         if not name:
             continue
-        # If this key may block, show the indicator before handling
-        # it so the user gets feedback during the wait.
-        if name in _BUSY_PREVIEW and not app.busy:
+        # If this key may block, show the indicator before handling it
+        # so the user gets feedback during the wait. The app sets its
+        # own busy text when a slow operation actually starts; when the
+        # operation turns out to be instant (cache hit) the preview is
+        # reclaimed here so the indicator never sticks.
+        preview = name in _BUSY_PREVIEW and not app.busy
+        if preview:
             app.busy = _BUSY_PREVIEW[name]
             _draw(stdscr, app)
         try:
@@ -391,3 +405,162 @@ def _loop(stdscr, app: App) -> None:
             return
         except KeyboardInterrupt:
             return
+        finally:
+            if preview and app.busy == _BUSY_PREVIEW[name]:
+                app.busy = ""
+
+
+class Splash:
+    """Boot screen shown while the auth gate and initial load run.
+
+    The UI comes up before any pass-cli call so a slow session probe
+    never leaves a blank terminal: the splash draws a title, a status
+    line ("Checking session…", "Loading items…", gate messages)
+    and, when the gate asks for input, a prompt line. Prompts (lock
+    code, access token, lock setup) read hidden input here — the
+    typed text is never drawn. Esc/Ctrl-c at a prompt aborts it.
+    """
+
+    def __init__(self, stdscr) -> None:
+        self._stdscr = stdscr
+        self.status = "Starting…"
+        self._prompt_label = ""
+        self._input = ""
+        stdscr.keypad(True)
+
+    def note(self, text: str) -> None:
+        """Update the status line (also used for gate messages)."""
+        self.status = text
+        self._prompt_label = ""  # a status update ends any prompt display
+        self._redraw()
+
+    def redraw(self) -> None:
+        self._redraw()
+
+    def prompt(self, label: str = "") -> str:
+        """Prompt for hidden input on the splash's prompt line.
+
+        Echo is disabled; the typed text is never drawn. Backspace
+        edits, Enter accepts. Raises AuthAborted on Esc/Ctrl-c/EOF.
+        """
+        from .auth import AuthAborted
+
+        self._prompt_label = label
+        self._input = ""
+        curses.curs_set(1)
+        self._redraw()
+        while True:
+            try:
+                ch = self._stdscr.getch()
+            except KeyboardInterrupt:
+                raise AuthAborted() from None
+            if ch == 27 or ch == 3:  # Esc / Ctrl-c
+                curses.curs_set(0)
+                raise AuthAborted() from None
+            if ch in (10, 13, curses.KEY_ENTER):
+                curses.curs_set(0)
+                return self._input
+            if ch in (curses.KEY_BACKSPACE, 127, 8):
+                self._input = self._input[:-1]
+                continue
+            if 32 <= ch < 127:
+                self._input += chr(ch)
+
+    def _redraw(self) -> None:
+        stdscr = self._stdscr
+        _height, width = stdscr.getmaxyx()
+        stdscr.erase()
+        _put(stdscr, 0, 0, "Proton Pass", curses.A_BOLD)
+        _put(stdscr, 1, 0, _truncate(self.status, width - 1), _pair(_PAIR_PROMPT))
+        if self._prompt_label:
+            _put(stdscr, 3, 0, _truncate(self._prompt_label, width - 1), curses.A_DIM)
+            # The input line shows a cursor only; the input stays hidden.
+            _put(stdscr, 4, 0, "> ", _pair(_PAIR_PROMPT))
+            stdscr.move(4, 2)
+        stdscr.refresh()
+
+
+def run_splash(stdscr, config, client):
+    """Boot the app behind a splash screen, inside a curses session.
+
+    Brings up the splash, probes the pass-cli session in a worker
+    thread (Esc/Ctrl-c during the probe cancels the boot), runs the
+    auth gate (lock-code / access-token prompts render on the splash),
+    builds the App and runs its non-blocking launch flow, then returns
+    (True, app). The caller continues with the main event loop on the
+    same stdscr.
+
+    Returns (False, None) when the user cancels during the boot or
+    authentication fails; the caller prints the outcome and exits.
+    The splash is torn down by the caller's draw (the list/field
+    screens erase before drawing).
+    """
+    import threading
+
+    from . import cli as _cli
+    from .auth import AuthAborted, ensure_authenticated, setup_session_locks
+    from .passcli import SESSION_LOGGED_OUT
+
+    _init_colors()
+    curses.curs_set(0)
+    splash = Splash(stdscr)
+
+    def gate_log(message: str) -> None:
+        if config.verbose:
+            splash.note(message)
+
+    # Probe the session in a worker thread so the splash stays live
+    # while pass-cli answers: Esc/Ctrl-c during the probe cancels.
+    splash.note("Checking session…")
+    probe: dict = {"state": None}
+    probe_done = threading.Event()
+
+    def do_probe() -> None:
+        try:
+            probe["state"] = client.session_state()
+        except Exception:
+            probe["state"] = SESSION_LOGGED_OUT
+        probe_done.set()
+
+    threading.Thread(target=do_probe, daemon=True).start()
+    stdscr.timeout(100)
+    try:
+        while not probe_done.is_set():
+            splash.redraw()
+            try:
+                ch = stdscr.getch()
+            except KeyboardInterrupt:
+                ch = 3
+            if ch in (27, 3):  # Esc / Ctrl-c
+                return False, None
+    finally:
+        stdscr.timeout(-1)
+
+    try:
+        authenticated = ensure_authenticated(
+            client,
+            state=probe["state"],
+            prompt_token=lambda: splash.prompt("Personal access token (input hidden): "),
+            prompt_lock=lambda: splash.prompt("Lock code (input hidden): "),
+            stream=splash.note,
+            log=gate_log,
+        )
+    except AuthAborted:
+        return False, None
+    if not authenticated:
+        return False, None
+    splash.note("Loading items…")
+    setup_session_locks(
+        client,
+        config,
+        prompt_lock=lambda: splash.prompt("New lock code (input hidden): "),
+        stream=splash.note,
+        log=gate_log,
+    )
+
+    app = _cli.build_app(config, client=client)
+    # The launch flow is non-blocking: it renders from the cache and
+    # refreshes stale/missing caches in the background, so the splash
+    # hands over to the list immediately.
+    app.start()
+    return True, app

@@ -124,10 +124,16 @@ def test_empty_query_shows_nothing_even_with_cache(tmp_path):
 def test_start_rebuilds_when_cache_missing(tmp_path):
     client = FakeClient(items=([ref()], 1))
     app = make_app(tmp_path, client=client, refs=None)
-    # No cache dumped; start() must rebuild.
+    # No cache dumped; start() kicks off a background rebuild.
     screen = app.start()
     assert client.list_calls == 1
+    assert app.busy  # "Reloading items..." while the rebuild runs
+    # The background rebuild lands and poll_refresh re-renders the list.
+    assert app._bg_done.wait(timeout=5)
+    screen = app.poll_refresh()
+    assert isinstance(screen, ListScreen)
     assert [r.title for r in screen.refs] == ["GitHub"]
+    assert app.busy == ""
     assert (Path(app.config.cache_dir) / CACHE_NAME).exists()
 
 
@@ -142,7 +148,12 @@ def test_start_rebuild_failure_shows_empty_list(tmp_path):
     screen = app.start()
     assert isinstance(screen, ListScreen)
     assert screen.refs == []
-    # A failed initial rebuild must not crash later refreshes either.
+    # The failed background rebuild clears the busy indicator; the
+    # list stays empty (no stale cache to fall back to).
+    assert app._bg_done.wait(timeout=5)
+    assert app.poll_refresh() is None
+    assert app.busy == ""
+    # A later refresh must not crash either.
     screen = app.handle_key("ctrl_r")
     assert isinstance(screen, ListScreen)
 
@@ -968,6 +979,9 @@ def test_busy_set_and_cleared_around_rebuild(tmp_path):
     app._set_busy = spy
     app.start()
     assert any("Reloading" in b for b in busy_seen)
+    assert app.busy  # still refreshing in the background
+    assert app._bg_done.wait(timeout=5)
+    app.poll_refresh()
     assert app.busy == ""
 
 
@@ -1024,3 +1038,115 @@ def test_busy_cleared_when_sensitive_copy_fails(tmp_path):
     assert screen.message == "Nothing to copy"
     assert clipboard.written == []
     assert app.busy == ""
+
+
+# ------------------------------------------------- background refresh
+
+
+def _wait_bg(app, timeout=5):
+    assert app._bg_done.wait(timeout=timeout)
+    return app.poll_refresh()
+
+
+def test_start_with_stale_cache_renders_stale_and_refreshes(tmp_path):
+    """A stale-but-present cache renders immediately; a background
+    rebuild refreshes it and poll_refresh re-renders the list."""
+    import os
+    import time as _time
+
+    from pass_tui.cache import Cache
+    from pass_tui.passcli import PassCli
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    stale = ref("s1", "i1", "GitHub", ("https://github.com",))
+    dump_cache([stale], cache_dir / CACHE_NAME)
+    old = _time.time() - 10_000
+    os.utime(cache_dir / CACHE_NAME, (old, old))
+
+    fresh = ref("s1", "i2", "Bank", ("https://bank.example.com",))
+    client = FakeClient(items=([fresh], 1))
+    config = Config(cache_dir=str(cache_dir), cache_ttl=600)
+    cache = Cache(cache_dir / CACHE_NAME, client, ttl=config.cache_ttl)
+    state = StateStore(cache_dir)
+    app = App(config, cache, state, client, FakeClipboard())
+
+    screen = app.start()
+    # Stale list renders synchronously — no blocking rebuild.
+    assert [r.title for r in screen.refs] == ["GitHub"]
+    assert client.list_calls == 1  # background rebuild kicked off
+    assert app.busy  # "Reloading items..." while it runs
+    screen = _wait_bg(app)
+    assert [r.title for r in screen.refs] == ["Bank"]
+    assert app.busy == ""
+    # Cache file on disk is the fresh one now.
+    from pass_tui.cache import load_cache
+
+    assert [r.title for r in load_cache(cache_dir / CACHE_NAME)] == ["Bank"]
+
+
+def test_start_with_fresh_cache_does_not_rebuild(tmp_path):
+    client = FakeClient(items=([ref()], 1))
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    screen = app.start()
+    assert [r.title for r in screen.refs] == ["GitHub"]
+    assert client.list_calls == 0
+    assert app.busy == ""
+    assert app.poll_refresh() is None
+
+
+def test_poll_refresh_returns_none_while_running(tmp_path):
+    client = FakeClient(items=([ref()], 1))
+    app = make_app(tmp_path, client=client, refs=None)
+    app.start()
+    # Either the refresh already finished (poll returns a screen) or
+    # it is still running (poll returns None) — never raises.
+    result = app.poll_refresh()
+    if result is None:
+        assert app.busy  # still refreshing
+        result = _wait_bg(app)
+        assert [r.title for r in result.refs] == ["GitHub"]
+    else:
+        assert [r.title for r in result.refs] == ["GitHub"]
+
+
+def test_poll_refresh_noop_when_no_refresh_started(tmp_path):
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    assert app.poll_refresh() is None
+    assert app.busy == ""
+
+
+class _SlowClient(FakeClient):
+    """list_all_items blocks until released, so a second refresh
+    attempt observably overlaps the first."""
+
+    def __init__(self, items):
+        super().__init__(items=items)
+        import threading
+
+        self._gate = threading.Event()
+        self.calls = 0
+
+    def list_all_items(self):
+        self.calls += 1
+        self._gate.wait(timeout=5)
+        return super().list_all_items()
+
+
+def test_refresh_async_skipped_while_one_is_running(tmp_path):
+    client = _SlowClient(items=([ref()], 1))
+    app = make_app(tmp_path, client=client, refs=None)
+    app.start()
+    first = app._refresh_thread
+    assert first is not None and first.is_alive()
+    app._refresh_async()  # second call must not start another thread
+    assert app._refresh_thread is first
+    assert client.calls == 1
+    client._gate.set()
+    _wait_bg(app)
+    # After the first refresh finished, a new one can start again.
+    app._refresh_async()
+    assert app._refresh_thread is not None and app._refresh_thread is not first
+    client._gate.set()
+    _wait_bg(app)

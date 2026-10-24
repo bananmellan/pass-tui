@@ -215,6 +215,15 @@ class Cache:
     def load(self) -> list[ItemRef]:
         return load_cache(self.path)
 
+    def is_stale(self) -> bool:
+        """True when the cache file is older than the TTL (or missing).
+
+        Used by the launch flow to decide whether the UI can render
+        from cache immediately and refresh in the background.
+        """
+        age = cache_age(self.path)
+        return age is None or age > self.ttl
+
     def rebuild(self) -> tuple[list[ItemRef], int]:
         """Rebuild the cache. Returns (items, raw_count) where raw_count is
         the number of item entries pass-cli returned before dedup."""

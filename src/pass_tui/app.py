@@ -12,6 +12,7 @@ feeds keystrokes; tests drive the controller directly.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -127,6 +128,10 @@ class App:
         # Set by start() so the TUI can skip the launch flow when the
         # app was already started (e.g. seeded in tests).
         self._started = False
+        # Background cache refresh (launch with a stale/missing cache).
+        self._refresh_thread: threading.Thread | None = None
+        self._bg_done = threading.Event()
+        self._bg_result: list[ItemRef] | None = None
 
     # ------------------------------------------------------------ helpers
 
@@ -292,17 +297,8 @@ class App:
         if host:
             refs = self.cache.load()
             if not refs:
-                self._set_busy("Reloading items…")
-                try:
-                    refs, raw_count = self.cache.rebuild()
-                    self._log(
-                        f"initial rebuild: {len(refs)} unique items from {raw_count} raw entries"
-                    )
-                except PassCliError as exc:
-                    self._log(f"initial rebuild failed: {exc}")
-                    refs = []
-                finally:
-                    self._clear_busy()
+                self._refresh_async()
+                return self._refresh_list()
             with_urls = sum(1 for ref in refs if ref.urls)
             self._log(f"cache: {len(refs)} items, {with_urls} with urls")
             matches = match_host(refs, host)
@@ -316,22 +312,55 @@ class App:
                 return self._refresh_list(host_filter=host, matches=matches)
             self._log("clipboard matching did not handle the launch")
 
+        refs = self.cache.load()
+        if not refs or self.cache.is_stale():
+            self._refresh_async()
+        return self._refresh_list()
+
+    def _refresh_async(self) -> None:
+        """Kick off a cache rebuild in the background.
+
+        The list renders from the cache immediately (possibly empty or
+        stale) and is re-rendered from the fresh cache when the rebuild
+        finishes. The busy indicator stays up for the whole refresh.
+        """
+        if self._refresh_thread is not None and self._refresh_thread.is_alive():
+            return
         self._set_busy("Reloading items…")
-        try:
-            refs = self.cache.get()
-        except PassCliError as exc:
-            self._log(f"initial rebuild failed: {exc}")
-            refs = []
-        if not refs:
+
+        def work() -> None:
             try:
                 refs, raw_count = self.cache.rebuild()
                 self._log(
-                    f"initial rebuild: {len(refs)} unique items from {raw_count} raw entries"
+                    f"background rebuild: {len(refs)} unique items from {raw_count} raw entries"
                 )
+                self._bg_result = refs
             except PassCliError as exc:
-                self._log(f"initial rebuild failed: {exc}")
+                self._log(f"background rebuild failed: {exc}")
+            finally:
+                self._bg_done.set()
+
+        self._refresh_thread = threading.Thread(target=work, daemon=True)
+        self._refresh_thread.start()
+
+    def poll_refresh(self) -> Screen | None:
+        """Check a background refresh started by start()/_refresh_async.
+
+        Returns a re-rendered list screen when fresh items landed (and
+        clears the busy indicator), or None while the refresh is still
+        running. A failed refresh just clears the indicator — the list
+        keeps showing the previous (stale or empty) cache.
+        """
+        thread = self._refresh_thread
+        if thread is None or not self._bg_done.is_set():
+            return None
+        self._refresh_thread = None
+        self._bg_done.clear()
         self._clear_busy()
-        return self._refresh_list()
+        if self._bg_result is not None:
+            self._bg_result = None
+            return self._refresh_list()
+        return None
 
     # ------------------------------------------------------------ keys
 
