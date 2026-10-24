@@ -373,9 +373,14 @@ def test_close_without_copy_then_relaunch_shows_list(tmp_path):
     app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
-    # Quit without copying (esc from fields goes back to list; esc again quits).
+    # Quit without copying: esc from fields goes back to the list (with
+    # the query restored), the next esc clears the query, and the third
+    # esc quits.
     app.handle_key("esc")
     assert isinstance(app.screen, ListScreen)
+    assert app.screen.query == "GitHub"  # restored
+    app.handle_key("esc")  # clears the query
+    assert app.screen.query == ""
     with pytest.raises(QuitRequested):
         app.handle_key("esc")
     client.view_calls.clear()
@@ -483,6 +488,55 @@ def test_esc_in_fields_returns_to_list(tmp_path):
     screen = app.handle_key("esc")
     assert isinstance(screen, ListScreen)
     assert [r.title for r in screen.refs] == ["GitHub"]
+
+
+def test_search_query_persists_after_open_and_back(tmp_path):
+    """Searching, opening an item, then going back must restore the
+    search query (and the filtered list), not start over."""
+    app = make_app(
+        tmp_path,
+        refs=[
+            ref(),
+            ref("s1", "i2", "GitLab", ("https://gitlab.com",)),
+            ref("s1", "i3", "Bank", ("https://bank.example.com",)),
+        ],
+    )
+    app.start()
+    for ch in "git":
+        app.handle_key(ch)
+    assert app.screen.query == "git"
+    assert [r.title for r in app.screen.visible] == ["GitHub", "GitLab"]
+    # Open the first match, then go back.
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    screen = app.handle_key("esc")
+    assert isinstance(screen, ListScreen)
+    assert screen.query == "git"
+    assert [r.title for r in screen.visible] == ["GitHub", "GitLab"]
+
+
+def test_search_query_and_selection_persist_after_open_and_back(tmp_path):
+    """Selection (not just the query) survives the round-trip."""
+    app = make_app(
+        tmp_path,
+        refs=[
+            ref("s1", "i1", "GitHub", ("https://github.com",)),
+            ref("s1", "i2", "GitLab", ("https://gitlab.com",)),
+            ref("s1", "i3", "Bank", ("https://bank.example.com",)),
+        ],
+    )
+    app.start()
+    for ch in "git":
+        app.handle_key(ch)
+    app.handle_key("down")  # select GitLab
+    assert app.screen.selected == 1
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    screen = app.handle_key("esc")
+    assert isinstance(screen, ListScreen)
+    assert screen.query == "git"
+    assert screen.selected == 1
+    assert screen.selected_ref.title == "GitLab"
 
 
 def test_fields_typing_filters_fields(tmp_path):

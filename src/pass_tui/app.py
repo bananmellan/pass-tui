@@ -122,6 +122,10 @@ class App:
         self.screen: Screen = ListScreen()
         self._item_view: dict = {}
         self._field_values: dict[str, str] = {}
+        # The list screen saved when an item is opened, so going back
+        # (esc from the field view) restores the search query, selection
+        # and scroll position instead of starting over.
+        self._saved_list: ListScreen | None = None
         # Human-readable description of the in-flight operation (""
         # when idle). The TUI renders it as a loading indicator.
         self.busy: str = ""
@@ -163,6 +167,7 @@ class App:
             message=message,
         )
         self.screen = screen
+        self._saved_list = None
         self.state.set_stage(STAGE_LIST)
         self.state.set_open_item(None)
         return screen
@@ -175,7 +180,12 @@ class App:
         sensitive-field inventory (labels only, never values) is known
         from the same capture; copying a sensitive field fetches the
         value live from pass-cli.
+
+        The current list screen is saved so that going back (esc from
+        the field view) restores the search query and selection.
         """
+        if isinstance(self.screen, ListScreen) and self.screen.refs:
+            self._saved_list = self.screen
         data = cached_view_from_ref(ref)
         if data is not None:
             self._log(f"opened {ref.title!r} from cache ({len(ref.safe_fields)} fields)")
@@ -461,7 +471,7 @@ class App:
                 screen.selected = 0
                 screen.offset = 0
                 return screen
-            return self._refresh_list()
+            return self._restore_list()
         if key == "up":
             screen.selected = max(0, screen.selected - 1)
             return screen
@@ -492,6 +502,22 @@ class App:
             screen.offset = 0
             return screen
         return screen
+
+    def _restore_list(self) -> ListScreen:
+        """Go back from the field view to the list.
+
+        Restores the list screen saved when the item was opened (with
+        the search query, selection and scroll position intact) when
+        available; otherwise falls back to a fresh list.
+        """
+        saved = self._saved_list
+        self._saved_list = None
+        if saved is not None:
+            self.screen = saved
+            self.state.set_stage(STAGE_LIST)
+            self.state.set_open_item(None)
+            return saved
+        return self._refresh_list()
 
     def _refresh_action(self) -> Screen:
         self._set_busy("Reloading items…")

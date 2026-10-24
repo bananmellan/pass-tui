@@ -590,9 +590,10 @@ def test_pty_quit_with_esc(tmp_path):
 
 
 def test_pty_open_item_and_copy(tmp_path):
-    rc = _run_in_pty(tmp_path, [b"\r", b"\x1b", b"\x1b"], [ref()], seed_query="GitHub")
+    rc = _run_in_pty(tmp_path, [b"\r", b"\x1b", b"\x1b", b"\x1b"], [ref()], seed_query="GitHub")
     assert rc == 0
-    # esc from fields goes back to list; second esc quits.
+    # esc from fields goes back to list (query restored); next esc clears
+    # the query; third esc quits.
     assert (tmp_path / "cache").is_dir()
 
 
@@ -614,7 +615,8 @@ def test_pty_copy_quits_program(tmp_path):
 def test_pty_ctrl_n_moves_down(tmp_path):
     # Title-sorted: Bank (i2) first, GitHub (i1) second.
     refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
-    rc = _run_in_pty(tmp_path, [b"\x0e", b"\r", b"\x1b", b"\x1b"], refs, seed_query="login")
+    # After going back the query is restored; extra esc clears it, then quits.
+    rc = _run_in_pty(tmp_path, [b"\x0e", b"\r", b"\x1b", b"\x1b", b"\x1b"], refs, seed_query="login")
     assert rc == 0
     opened = (tmp_path / "cache" / "opened.txt").read_text().split()
     assert opened == ["i1"]  # Ctrl+n selected GitHub
@@ -622,16 +624,17 @@ def test_pty_ctrl_n_moves_down(tmp_path):
 
 def test_pty_ctrl_p_moves_up(tmp_path):
     refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
-    rc = _run_in_pty(tmp_path, [b"\x0e", b"\x10", b"\r", b"\x1b", b"\x1b"], refs, seed_query="login")
+    rc = _run_in_pty(tmp_path, [b"\x0e", b"\x10", b"\r", b"\x1b", b"\x1b", b"\x1b"], refs, seed_query="login")
     assert rc == 0
     opened = (tmp_path / "cache" / "opened.txt").read_text().split()
     assert opened == ["i2"]  # Ctrl+n then Ctrl+p: back on Bank
 
 
 def test_pty_ctrl_l_goes_back_from_fields(tmp_path):
-    rc = _run_in_pty(tmp_path, [b"\r", b"\x0c", b"\x1b"], [ref()], seed_query="GitHub")
+    rc = _run_in_pty(tmp_path, [b"\r", b"\x0c", b"\x1b", b"\x1b"], [ref()], seed_query="GitHub")
     assert rc == 0
-    # Ctrl+l returned to the list, so no second open happened.
+    # Ctrl+l returned to the list (query restored); esc clears the
+    # query, the next esc quits. No second open happened.
     opened = (tmp_path / "cache" / "opened.txt").read_text().split()
     assert opened == ["i1"]
 
