@@ -594,3 +594,52 @@ def test_totp_uses_pass_uri():
     client = PassCli("pass-cli", runner=runner)
     assert client.totp(ItemRef("s1", "i1", "GitHub")) == "123456"
     assert seen[0][-1] == "pass://s1/i1/totp"
+
+
+def test_is_authenticated_true_when_info_succeeds():
+    seen = []
+
+    def runner(argv):
+        seen.append(argv)
+        return "- Release track: stable\n"
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.is_authenticated() is True
+    assert seen == [["pass-cli", "info"]]
+
+
+def test_is_authenticated_false_when_info_fails():
+    def runner(argv):
+        raise PassCliError("no session, please login")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.is_authenticated() is False
+
+
+def test_is_authenticated_false_when_binary_missing():
+    def runner(argv):
+        raise PassCliError("executable not found: pass-cli")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.is_authenticated() is False
+
+
+def test_login_with_token_passes_token_flag():
+    seen = []
+
+    def runner(argv):
+        seen.append(argv)
+        return ""
+
+    client = PassCli("pass-cli", runner=runner)
+    client.login_with_token("pst_abc::key")
+    assert seen == [["pass-cli", "login", "--personal-access-token", "pst_abc::key"]]
+
+
+def test_login_with_token_propagates_failure():
+    def runner(argv):
+        raise PassCliError("invalid token")
+
+    client = PassCli("pass-cli", runner=runner)
+    with pytest.raises(PassCliError):
+        client.login_with_token("pst_bad")

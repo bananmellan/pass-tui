@@ -211,6 +211,27 @@ class PassCli:
         except json.JSONDecodeError as exc:
             raise PassCliError(f"invalid JSON from {' '.join(argv)}") from exc
 
+    def is_authenticated(self) -> bool:
+        """True when pass-cli has a valid session.
+
+        `pass-cli info` fails (non-zero exit) when there is no session,
+        so the exit code is the whole check.
+        """
+        try:
+            self._exec([self.binary, "info"])
+        except PassCliError:
+            return False
+        return True
+
+    def login_with_token(self, token: str) -> None:
+        """Log in with a personal access token (pst_...::KEY).
+
+        The token is passed via the command line, so it briefly appears
+        in the process list of this machine; it is never written to disk
+        by pass-cli and never logged by this tool.
+        """
+        self._exec([self.binary, "login", "--personal-access-token", token])
+
     def list_vaults(self) -> list[Vault]:
         data = self._exec_json([self.binary, "vault", "list", "--output", "json"])
         return parse_vaults(data)

@@ -54,7 +54,11 @@ toolkit — just run it from a terminal.
 ## Requirements
 
 - Python >= 3.10 (standard library only — curses ships with CPython)
-- `pass-cli` (logged in: `pass-cli login`)
+- `pass-cli` — if it has no valid session when pass-tui starts, pass-tui
+  prompts for a [personal access
+  token](https://protonpass.github.io/pass-cli/get-started/configuration/#personal-access-tokens)
+  and logs in with it, so you no longer need to run `pass-cli login`
+  first
 - `wl-copy`/`wl-paste`, `xclip` or `xsel` for clipboard integration
 - A terminal with curses support
 
@@ -138,6 +142,11 @@ host, how many cached items have urls, and how many matched.
 - Cache and state files are written atomically with `0600` permissions.
 - Field values are never logged; debug logging records only titles, ids and
   error messages.
+- When pass-cli is not authenticated, pass-tui prompts for a personal
+  access token with terminal echo disabled. The token is passed straight
+  to `pass-cli login --personal-access-token` and is never printed, logged
+  or written to disk by pass-tui. Note that PAT sessions last 2 hours —
+  when one expires, relaunch pass-tui and paste a fresh token.
 
 ## Development
 

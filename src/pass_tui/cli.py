@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from .app import App
+from .auth import AuthAborted, ensure_authenticated
 from .cache import CACHE_NAME, Cache
 from .clipboard import Clipboard
 from .config import Config
@@ -78,9 +79,21 @@ def run_tui(config: Config | None = None, env=None) -> int:
             file=sys.stderr,
         )
         return 2
+    cache_dir = Path(config.cache_dir)
+    client = PassCli(config.pass_cli_bin)
+    try:
+        authenticated = ensure_authenticated(
+            client,
+            log=lambda msg: _verbose(config, cache_dir, msg),
+        )
+    except AuthAborted:
+        print("pass-tui: aborted.", file=sys.stderr)
+        return 1
+    if not authenticated:
+        return 1
     from .tui import run
 
-    app = build_app(config)
+    app = build_app(config, client=client)
     try:
         run(app)
     except KeyboardInterrupt:
