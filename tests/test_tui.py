@@ -304,6 +304,105 @@ def test_draw_list_narrow_terminal_keeps_title_column(tmp_path):
         assert len(win.row(y).rstrip()) <= 29
 
 
+def test_split_field_label():
+    assert tui._split_field_label("note") == ("note", "note")
+    assert tui._split_field_label("totp") == ("totp", "totp")
+    assert tui._split_field_label("url: https://x.com") == ("url", "https://x.com")
+    assert tui._split_field_label("email: a@b.c") == ("email", "a@b.c")
+    assert tui._split_field_label("field: PIN") == ("field", "PIN")
+    assert tui._split_field_label("Admin: user") == ("Admin", "user")
+    assert tui._split_field_label("username") == ("field", "username")
+
+
+def test_field_columns_fixed_width():
+    labels = ["note", "url: https://github.com", "field: API key", "username"]
+    kind_w, value_w = tui._field_columns(labels, 80)
+    assert kind_w == len("field")  # widest kind
+    assert kind_w + len(tui._COL_SEP) + value_w <= 79
+
+
+def test_field_hint_truncates_and_marks_multiline():
+    assert tui._field_hint("password", "secret") == "secret"
+    assert tui._field_hint("totp", "") == ""
+    long_value = "x" * 100
+    assert len(tui._field_hint("password", long_value)) <= tui._MAX_HINT_COL
+    multi = "line1\nline2"
+    assert tui._field_hint("private_key", multi) == "line1 \u2026"
+
+
+def test_draw_fields_two_columns_with_hints(tmp_path):
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    win = StubWindow()
+    tui._draw_fields(win, app, app.field_values())
+    rows = [win.row(2 + i) for i in range(len(app.screen.visible))]
+    labels = app.screen.visible
+    by_label = dict(zip(labels, rows))
+    # Kind column at x=0, separator at a fixed offset on every row.
+    sep_idx = {row.index(tui._COL_SEP) for row in rows}
+    assert len(sep_idx) == 1
+    # note row: kind "note", name "note", preview "work account".
+    assert by_label["note"].startswith("note")
+    assert "work account" in by_label["note"]
+    # username/password are plain section fields: kind "field".
+    assert by_label["username"].startswith("field")
+    assert "me" in by_label["username"]
+    assert by_label["password"].startswith("field")
+    assert "secret" in by_label["password"]
+    # url row: kind "url", name and preview are the url.
+    assert by_label["url: https://github.com"].startswith("url")
+    assert by_label["url: https://github.com"].count("https://github.com") == 2
+
+
+def test_draw_fields_without_values_draws_two_columns(tmp_path):
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.handle_key("enter")
+    win = StubWindow()
+    tui._draw_fields(win, app)  # no field_values: no hint column
+    row = win.row(2)
+    assert row.startswith("note")
+    assert "work account" not in row
+
+
+def test_draw_fields_totp_has_no_preview(tmp_path):
+    view = {
+        "item": {
+            "content": {
+                "title": "GitHub",
+                "note": "",
+                "content": {
+                    "Login": {
+                        "username": "me",
+                        "password": "secret",
+                        "urls": [],
+                        "totp_uri": "otpauth://totp/x",
+                    }
+                },
+            }
+        }
+    }
+    import json as _json
+
+    app = make_app(tmp_path, client=FakeClient(view=_json.dumps(view)), refs=[ref()])
+    app.start()
+    app.handle_key("enter")
+    values = app.field_values()
+    assert "totp" not in values  # fetched live at copy time, never stored
+    win = StubWindow()
+    tui._draw_fields(win, app, values)
+    totp_row = next(
+        win.row(2 + i)
+        for i, label in enumerate(app.screen.visible)
+        if label == "totp"
+    )
+    assert totp_row.startswith("totp")
+    # No masked preview after the value column for totp.
+    assert totp_row.count(tui._COL_SEP) == 1
+
+
 def test_draw_fields_shows_labels(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()

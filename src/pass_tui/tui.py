@@ -215,7 +215,70 @@ def _draw_list(stdscr, app: App) -> None:
     stdscr.refresh()
 
 
-def _draw_fields(stdscr, app: App) -> None:
+_MAX_KIND_COL = 24
+_MAX_HINT_COL = 40
+
+# Field-label classification for the two-column field view.
+_KIND_SPECIAL = {
+    "note": "note",
+    "totp": "totp",
+}
+
+
+def _split_field_label(label: str) -> tuple[str, str]:
+    """Split a field label into (kind, name) for the two-column view.
+
+    "note" -> ("note", "note"); "totp" -> ("totp", "totp");
+    "url: https://x" -> ("url", "https://x"); "email: a@b" ->
+    ("email", "a@b"); "field: PIN" -> ("field", "PIN");
+    "Admin: user" -> ("Admin", "user"); "username" -> ("field", "username").
+    """
+    kind = _KIND_SPECIAL.get(label)
+    if kind:
+        return kind, kind
+    for prefix in ("url: ", "email: ", "field: "):
+        if label.startswith(prefix):
+            return prefix[:-2], label[len(prefix):]
+    if ": " in label:
+        kind, _, name = label.partition(": ")
+        return kind, name
+    return "field", label
+
+
+def _field_columns(labels: list[str], width: int) -> tuple[int, int]:
+    """Fixed column widths for the field view: (kind, value).
+
+    The kind column is as wide as the widest kind (capped); the value
+    column takes the remaining space.
+    """
+    avail = max(1, width - 1)
+    kind_w = min(
+        max((len(_split_field_label(label)[0]) for label in labels), default=0),
+        _MAX_KIND_COL,
+    )
+    value_w = max(_MIN_TITLE_COL, avail - kind_w - len(_COL_SEP) - 1)
+    return kind_w, value_w
+
+
+def _field_hint(label: str, value: str) -> str:
+    """A short preview of a field's value, shown after the value column
+    so rows are distinguishable without printing secrets in full. Long
+    values are truncated; multi-line values show only their first line."""
+    if not value:
+        return ""
+    if "\n" in value:
+        first = value.split("\n", 1)[0]
+        return _truncate(first, _MAX_HINT_COL) + " \u2026"
+    return _truncate(value, _MAX_HINT_COL)
+
+
+def _draw_fields(stdscr, app: App, field_values: dict[str, str] | None = None) -> None:
+    """Render the field menu as fixed-width (kind, value) columns with
+    per-column colors, matching the list view's style.
+
+    `field_values` maps label -> copyable value for masked previews;
+    when absent (e.g. headless tests) no preview column is drawn.
+    """
     screen = app.screen
     assert isinstance(screen, FieldScreen)
     height, width = stdscr.getmaxyx()
@@ -228,20 +291,40 @@ def _draw_fields(stdscr, app: App) -> None:
         title = f"{screen.ref.title}  \u00b7  {badge}" if badge else screen.ref.title
     else:
         title = ""
-    _put(stdscr, 0, 0, _truncate(title, width - 1), curses.A_BOLD)
+    _put(stdscr, 0, 0, _truncate(title, width - 1), curses.A_BOLD | _pair(_PAIR_TITLE))
 
     prompt = f"> {screen.query}"
     _put(stdscr, 1, 0, _truncate(prompt, width - 1), _pair(_PAIR_PROMPT))
 
     visible = screen.visible
+    kind_w, value_w = _field_columns(visible, width)
+
+    kind_attr = curses.A_BOLD | _pair(_PAIR_BADGE)
+    value_attr = _pair(_PAIR_URL)
+
     for row in range(list_height):
         idx = screen.offset + row
         if idx >= len(visible):
             break
         label = visible[idx]
         y = 2 + row
-        attr = curses.A_REVERSE if idx == screen.selected else curses.A_NORMAL
-        _put(stdscr, y, 0, _truncate(label, width - 1), attr)
+        selected = idx == screen.selected
+        base = curses.A_REVERSE if selected else curses.A_NORMAL
+
+        kind, name = _split_field_label(label)
+        x = 0
+        _put(stdscr, y, x, _truncate(kind, kind_w).ljust(kind_w), base | kind_attr)
+        x += kind_w
+        _put(stdscr, y, x, _COL_SEP, base | curses.A_DIM)
+        x += len(_COL_SEP)
+        value = _truncate(name, value_w)
+        _put(stdscr, y, x, value, base | value_attr)
+        x += len(value)
+        if field_values is not None:
+            hint = _field_hint(label, field_values.get(label, ""))
+            if hint and x + len(_COL_SEP) + len(hint) < width - 1:
+                _put(stdscr, y, x, _COL_SEP, base | curses.A_DIM)
+                _put(stdscr, y, x + len(_COL_SEP), hint, base | curses.A_DIM)
 
     status = f"{len(visible)} fields"
     if screen.message:
@@ -264,7 +347,7 @@ def _loop(stdscr, app: App) -> None:
     _init_colors()
     while True:
         if isinstance(app.screen, FieldScreen):
-            _draw_fields(stdscr, app)
+            _draw_fields(stdscr, app, app.field_values())
         else:
             _draw_list(stdscr, app)
         try:

@@ -74,20 +74,75 @@ def _score(ref: ItemRef, query: str) -> int | None:
     return worst
 
 
-def filter_items(refs: list[ItemRef], query: str) -> list[ItemRef]:
+def _is_host_query(query: str) -> bool:
+    """True when the query looks like a host: dot-separated labels of
+    letters/digits/hyphens, e.g. "nc.honung.org" or "example.com:8080".
+
+    Host queries come from the clipboard prefill and must stay precise:
+    the fuzzy subsequence rank would otherwise match unrelated items
+    (an alias at bi.honung.org contains the characters of nc.honung.org
+    in order, and gmail titles contain scattered letters of it).
+    """
+    token = query.split()[0] if query.split() else ""
+    if "." not in token:
+        return False
+    if "://" in token or "/" in token:
+        return False  # a full URL, not a bare host
+    token = token.rsplit(":", 1)[0]  # strip a port
+    return bool(token) and all(
+        part and all(ch.isalnum() or ch == "-" for ch in part)
+        for part in token.split(".")
+    )
+
+
+def _host_score(ref: ItemRef, query: str) -> int | None:
+    """Precise scoring for host-like queries. Lower is better; None
+    means no match.
+
+    A token matches only by substring against the item's search text
+    (title, urls, vault, badge). No subsequence matching: host queries
+    are prefilled from the clipboard and must not pull in items that
+    merely share scattered characters.
+    """
+    haystack = search_text(ref).lower()
+    badge = type_badge(ref.item_type)
+    title = ref.title.lower()
+    worst = -1
+    for token in query.split():
+        if not token:
+            continue
+        if badge and token == badge:
+            rank = 0
+        elif token in title:
+            rank = 1
+        elif token in haystack:
+            rank = 3
+        else:
+            return None
+        worst = max(worst, rank)
+    if worst < 0:
+        return None
+    return worst
+
+
+def filter_items(refs: list[ItemRef], query: str, host_query: bool = False) -> list[ItemRef]:
     """Items matching the query, best matches first, stable within a rank.
 
     The input list is expected to be in display order (title-sorted);
     the output preserves that order within each rank. An empty query
     returns everything, so the unfiltered list is the sorted full list.
+
+    `host_query` selects precise host-style matching (substring only, no
+    subsequence) for clipboard-prefilled queries.
     """
     query = query.strip().lower()
     if not query:
         return list(refs)
+    score = _host_score if host_query or _is_host_query(query) else _score
     scored = []
     for ref in refs:
-        score = _score(ref, query)
-        if score is not None:
-            scored.append((score, ref))
+        value = score(ref, query)
+        if value is not None:
+            scored.append((value, ref))
     scored.sort(key=lambda entry: entry[0])
-    return [ref for _score, ref in scored]
+    return [ref for _score_value, ref in scored]

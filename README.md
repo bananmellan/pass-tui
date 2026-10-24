@@ -85,10 +85,17 @@ Bind `pass-tui` (or `bin/pass-tui`) to a key in your window manager or shell.
   move down/up, `Ctrl+m` (or `Ctrl+j`) is enter, `Ctrl+g` is back/quit.
 - The list renders fixed-width columns (title, type badge, url, vault), colored
   when the terminal supports colors.
+- The field menu uses the same style: fixed-width (kind, value) columns with a
+  short dimmed preview of each value after it (TOTP never shows a preview; its
+  code is fetched live at copy time).
 - In the field menu, `Enter` copies the field's value to the clipboard and
   **quits the program** (like rofi). The last-copied item's menu reopens on the
   next launch within `PASS_TUI_REOPEN_SECONDS` (default 20 s). `Esc` goes back
   to the item list; `Esc` again (or with an empty query) quits.
+- When the clipboard holds a URL, the matching items are listed with the host
+  prefilled as the query. Host-like queries match precisely (substring only —
+  no fuzzy subsequence), so unrelated items never appear; once you edit the
+  query past the host, normal fuzzy matching resumes.
 - Every copyable field of every item type is offered: note, login
   email/username/password, TOTP, urls, alias addresses (hide-my-email items),
   credit-card number/PIN, identity fields, ssh keys, wifi passwords, custom

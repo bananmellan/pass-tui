@@ -163,6 +163,64 @@ def test_clipboard_multiple_matches_lists_best_first_with_host_prefilled(tmp_pat
     assert not client.view_calls
 
 
+def test_clipboard_multi_match_list_excludes_fuzzy_extras(tmp_path):
+    """Regression: with a URL host in the clipboard and several real
+    matches, the prefilled list must show exactly the host-matched
+    items first — aliases at bi.honung.org and unrelated logins must
+    not appear above/among them via fuzzy subsequence matching."""
+    app = make_app(
+        tmp_path,
+        clipboard=FakeClipboard("https://nc.honung.org/apps/dashboard/"),
+        refs=[
+            ItemRef("s1", "i1", "arrogance_backspin132@bi.honung.org", (), "Personal", "Alias"),
+            ItemRef("s1", "i2", "chaplain_procreate523@bi.honung.org", (), "Personal", "Alias"),
+            ItemRef("s1", "i3", "NextCloud", ("https://nextcloud.com/", "https://nc.honung.org/", "https://nc.srv/"), "Personal", "Login"),
+            ItemRef("s1", "i4", "R2 Cloudflare", ("https://nc.honung.org/",), "Server", "Login"),
+            ItemRef("s1", "i5", "Google adam.thunberg@hotmail.com", ("https://accounts.google.com/signin/v2/s",), "Personal", "Login"),
+            ItemRef("s1", "i6", "Lenovo", ("https://passport.lenovo.com/wauthen5/wa",), "Personal", "Login"),
+        ],
+    )
+    screen = app.start()
+    assert isinstance(screen, ListScreen)
+    assert screen.query == "nc.honung.org"
+    # Real matches first, best-first...
+    assert screen.refs[0].title == "NextCloud"
+    assert screen.refs[1].title == "R2 Cloudflare"
+    # ...and the visible (prefilled) list contains no fuzzy extras.
+    visible_titles = [r.title for r in screen.visible]
+    assert "arrogance_backspin132@bi.honung.org" not in visible_titles
+    assert "chaplain_procreate523@bi.honung.org" not in visible_titles
+    assert "Google adam.thunberg@hotmail.com" not in visible_titles
+    assert "Lenovo" not in visible_titles
+    assert set(visible_titles) == {"NextCloud", "R2 Cloudflare"}
+
+
+def test_clipboard_host_prefill_fuzzy_resumes_after_user_edits(tmp_path):
+    """Once the user edits the prefilled host query away, normal fuzzy
+    matching applies again."""
+    app = make_app(
+        tmp_path,
+        clipboard=FakeClipboard("https://github.com"),
+        refs=[
+            ref(),
+            ItemRef("s1", "i2", "GitHub Enterprise", ("https://github.com/enterprise",), "Work", "Login"),
+            ItemRef("s1", "i3", "Gothub", ("https://gothub.example.com",), "Personal", "Login"),
+            ItemRef("s1", "i4", "GitLab", ("https://gitlab.com",), "Personal", "Login"),
+        ],
+    )
+    screen = app.start()
+    assert isinstance(screen, ListScreen)
+    assert screen.query == "github.com"
+    # Precise while the host is in the query: only substring matches.
+    assert {r.title for r in screen.visible} == {"GitHub", "GitHub Enterprise"}
+    # Clear the query and type a fuzzy one: subsequence matching resumes.
+    while screen.query:
+        screen = app.handle_key("backspace")
+    for ch in "gthub":
+        screen = app.handle_key(ch)
+    assert {r.title for r in screen.visible} == {"GitHub", "GitHub Enterprise", "Gothub"}
+
+
 def test_clipboard_no_match_shows_full_list(tmp_path):
     app = make_app(
         tmp_path,

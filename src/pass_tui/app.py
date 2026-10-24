@@ -43,7 +43,12 @@ class ListScreen:
 
     @property
     def visible(self) -> list[ItemRef]:
-        return filter_items(self.refs, self.query)
+        # While the clipboard-prefilled host is still in the query,
+        # filter precisely (substring only) so unrelated items never
+        # appear; once the user edits the query past the host, normal
+        # fuzzy matching resumes.
+        precise = bool(self.host_filter) and self.host_filter in self.query.lower()
+        return filter_items(self.refs, self.query, host_query=precise)
 
     @property
     def selected_ref(self) -> ItemRef | None:
@@ -102,6 +107,7 @@ class App:
         self._log = log or (lambda msg: None)
         self.screen: Screen = ListScreen()
         self._item_view: dict = {}
+        self._field_values: dict[str, str] = {}
 
     # ------------------------------------------------------------ helpers
 
@@ -141,11 +147,20 @@ class App:
             self._log(f"no readable fields for {ref.title!r}")
             return self._refresh_list(message=f"No readable fields in {ref.title!r}")
         self._item_view = data
+        # Precompute copyable values for the field-view preview column.
+        # TOTP is excluded: its value is fetched live at copy time.
+        self._field_values = {
+            label: field_value(data, label) for label in labels if label != "totp"
+        }
         screen = FieldScreen(ref=ref, labels=labels, message=message)
         self.screen = screen
         self.state.set_stage(STAGE_FIELDS)
         self.state.set_open_item(ref)
         return screen
+
+    def field_values(self) -> dict[str, str]:
+        """Copyable value per field label, for the field-view preview."""
+        return dict(self._field_values)
 
     def _copy_label(self, label: str) -> str:
         screen = self.screen
