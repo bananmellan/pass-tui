@@ -96,6 +96,63 @@ _ALIAS_META_KEYS = {
 # copyable payload (wifi security, card type).
 _SKIP_SECTION_KEYS = {"security", "card_type"}
 
+# Fixed-length mask shown on screen for hidden fields. Fixed length so
+# the preview never leaks how long the secret is.
+HIDDEN_PREVIEW = "••••••"
+
+# Typed-section field names whose values are secrets and must be
+# censored on screen (shown as HIDDEN_PREVIEW). Exact matches cover
+# every field of the built-in item types (Login.password,
+# CreditCard.number/pin/verification_number, SshKey.private_key,
+# Wifi.password, Identity ssn/passport/license numbers); substrings
+# catch obvious variants of the same idea.
+_HIDDEN_SECTION_KEYS = {
+    "password",
+    "passwd",
+    "pwd",
+    "pin",
+    "number",
+    "verification_number",
+    "cvv",
+    "cvc",
+    "card_number",
+    "private_key",
+    "secret",
+    "token",
+    "api_key",
+    "social_security_number",
+    "ssn",
+    "passport_number",
+    "license_number",
+    "licence_number",
+}
+_HIDDEN_SECTION_SUBSTRINGS = (
+    "password",
+    "passwd",
+    "passphrase",
+    "secret",
+    "token",
+    "cvv",
+    "verification",
+    "private_key",
+    "api_key",
+    "apikey",
+    "ssn",
+    "social_security",
+    "passport",
+    "license",
+    "licence",
+    "pin",
+)
+
+
+def _section_field_is_hidden(key: str) -> bool:
+    """True when a typed-section string field holds a secret."""
+    lowered = key.lower()
+    if lowered in _HIDDEN_SECTION_KEYS:
+        return True
+    return any(part in lowered for part in _HIDDEN_SECTION_SUBSTRINGS)
+
 # Identity sub-field groups (Vec<ItemExtraField>) get flattened into
 # "<group>: <name>" labels.
 _IDENTITY_EXTRA_GROUPS = {
@@ -148,6 +205,15 @@ def _extra_field_value(field: dict) -> str:
     if value:
         return str(value)
     return ""
+
+
+def _extra_field_is_hidden(field: dict) -> bool:
+    """True when an extra/custom field's content kind is a secret:
+    Hidden or Totp. Text and Timestamp values are shown on screen."""
+    content = field.get("content")
+    if isinstance(content, dict):
+        return "Hidden" in content or "Totp" in content
+    return False
 
 
 def _sections(content: dict) -> list[tuple[str, dict]]:
@@ -230,8 +296,9 @@ def _section_fields(section: dict) -> list[tuple[str, str]]:
     return out
 
 
-def _group_fields(section: dict, group_key: str, prefix: str) -> list[tuple[str, str]]:
-    """Flatten a Vec<ItemExtraField> group into ("<prefix>: <name>", value)."""
+def _group_fields(section: dict, group_key: str, prefix: str) -> list[tuple[str, str, bool]]:
+    """Flatten a Vec<ItemExtraField> group into
+    ("<prefix>: <name>", value, hidden)."""
     raw = section.get(group_key)
     if not isinstance(raw, list):
         return []
@@ -241,12 +308,12 @@ def _group_fields(section: dict, group_key: str, prefix: str) -> list[tuple[str,
             continue
         value = _extra_field_value(field)
         if value:
-            out.append((f"{prefix}: {field['name']}", value))
+            out.append((f"{prefix}: {field['name']}", value, _extra_field_is_hidden(field)))
     return out
 
 
-def _custom_sections(section: dict, key: str = "sections") -> list[tuple[str, str]]:
-    """Flatten Vec<CustomSection> into ("<section>: <field>", value)."""
+def _custom_sections(section: dict, key: str = "sections") -> list[tuple[str, str, bool]]:
+    """Flatten Vec<CustomSection> into ("<section>: <field>", value, hidden)."""
     raw = section.get(key)
     if not isinstance(raw, list):
         return []
@@ -265,11 +332,11 @@ def _custom_sections(section: dict, key: str = "sections") -> list[tuple[str, st
             if not value:
                 continue
             label = f"{section_name}: {field['name']}" if section_name else str(field["name"])
-            out.append((label, value))
+            out.append((label, value, _extra_field_is_hidden(field)))
     return out
 
 
-def _android_apps(data: dict, content: dict) -> list[tuple[str, str]]:
+def _android_apps(data: dict, content: dict) -> list[tuple[str, str, bool]]:
     """Allowed Android apps from ``platform_specific``."""
     platform = content.get("platform_specific")
     if platform is None:
@@ -292,64 +359,75 @@ def _android_apps(data: dict, content: dict) -> list[tuple[str, str]]:
             label = f"android app: {name} ({package})"
         else:
             label = f"android app: {package or name}"
-        out.append((label, package or name))
+        out.append((label, package or name, False))
     return out
 
 
-def _label_value_pairs(data: dict) -> list[tuple[str, str]]:
-    """Ordered (label, value) pairs of every copyable field."""
+def _label_value_pairs(data: dict) -> list[tuple[str, str, bool]]:
+    """Ordered (label, value, hidden) triples of every copyable field.
+
+    ``hidden`` marks secrets that must be censored on screen (shown as
+    HIDDEN_PREVIEW): typed-section secret keys, and extra/custom fields
+    whose content kind is Hidden or Totp. Copying is unaffected.
+    """
     content = _content(data)
-    pairs: list[tuple[str, str]] = []
+    pairs: list[tuple[str, str, bool]] = []
     note = content.get("note")
     if isinstance(note, str) and note:
-        pairs.append(("note", note))
+        pairs.append(("note", note, False))
 
     if _is_alias(content):
         address = _alias_address(data, content)
         if address:
-            pairs.append((f"email: {address}", address))
+            pairs.append((f"email: {address}", address, False))
 
     urls: list[str] = []
     for _name, section in _sections(content):
         for key, value in _section_fields(section):
-            pairs.append((key, value))
+            pairs.append((key, value, _section_field_is_hidden(key)))
         for key in ("urls", "autofill_urls"):
             raw = section.get(key)
             candidates = raw if isinstance(raw, list) else [raw]
             urls.extend(u for u in candidates if isinstance(u, str) and u)
         urls.extend(_autofill_urls(section))
         if section.get("totp_uri"):
-            pairs.append(("totp", ""))  # value fetched live via pass-cli
+            pairs.append(("totp", "", True))  # value fetched live via pass-cli
         for group_key, prefix in _IDENTITY_EXTRA_GROUPS.items():
             pairs.extend(_group_fields(section, group_key, prefix))
         pairs.extend(_custom_sections(section))
         pairs.extend(_custom_sections(section, key="extra_sections"))
 
     for url in dict.fromkeys(urls):
-        pairs.append((f"url: {url}", url))
+        pairs.append((f"url: {url}", url, False))
 
     for field in _extra_fields(data):
         if isinstance(field, dict) and field.get("name"):
             value = _extra_field_value(field)
             if value:
-                pairs.append((f"field: {field['name']}", value))
+                pairs.append((f"field: {field['name']}", value, _extra_field_is_hidden(field)))
 
     pairs.extend(_android_apps(data, content))
 
     # De-duplicate by label, keeping first occurrence and order.
     seen = set()
     out = []
-    for label, value in pairs:
+    for label, value, hidden in pairs:
         if label in seen:
             continue
         seen.add(label)
-        out.append((label, value))
+        out.append((label, value, hidden))
     return out
 
 
 def field_labels(data: dict) -> list[str]:
     """Ordered, de-duplicated labels of copyable fields for an item view JSON."""
-    return [label for label, _value in _label_value_pairs(data)]
+    return [label for label, _value, _hidden in _label_value_pairs(data)]
+
+
+def hidden_field_labels(data: dict) -> set[str]:
+    """Labels of fields whose values are secrets and must be censored
+    on screen (see HIDDEN_PREVIEW)."""
+    return {label for label, _value, hidden in _label_value_pairs(data) if hidden}
 
 
 def field_value(data: dict, label: str, totp: str = "") -> str:
@@ -360,7 +438,7 @@ def field_value(data: dict, label: str, totp: str = "") -> str:
     """
     if label == "totp":
         return totp
-    for known, value in _label_value_pairs(data):
+    for known, value, _hidden in _label_value_pairs(data):
         if known == label:
             return value
     return ""

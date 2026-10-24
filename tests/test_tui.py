@@ -346,11 +346,14 @@ def test_draw_fields_two_columns_with_hints(tmp_path):
     # note row: kind "note", name "note", preview "work account".
     assert by_label["note"].startswith("note")
     assert "work account" in by_label["note"]
-    # username/password are plain section fields: kind "field".
+    # username is not sensitive: shown in full. password is censored.
     assert by_label["username"].startswith("field")
     assert "me" in by_label["username"]
     assert by_label["password"].startswith("field")
-    assert "secret" in by_label["password"]
+    assert "secret" not in by_label["password"]
+    from pass_tui.fields import HIDDEN_PREVIEW
+
+    assert HIDDEN_PREVIEW in by_label["password"]
     # url row: kind "url", name and preview are the url.
     assert by_label["url: https://github.com"].startswith("url")
     assert by_label["url: https://github.com"].count("https://github.com") == 2

@@ -20,7 +20,7 @@ from typing import Callable
 from .cache import Cache, match_host, sort_refs
 from .clipboard import Clipboard, ClipboardError, extract_host
 from .config import Config
-from .fields import field_labels, field_value
+from .fields import HIDDEN_PREVIEW, field_labels, field_value, hidden_field_labels
 from .models import ItemRef
 from .passcli import PassCli, PassCliError
 from .search import filter_items
@@ -147,10 +147,16 @@ class App:
             self._log(f"no readable fields for {ref.title!r}")
             return self._refresh_list(message=f"No readable fields in {ref.title!r}")
         self._item_view = data
-        # Precompute copyable values for the field-view preview column.
-        # TOTP is excluded: its value is fetched live at copy time.
+        # Precompute on-screen previews for the field-view hint column.
+        # Hidden fields (passwords, PINs, Hidden/Totp extra fields, ...)
+        # show a fixed-length mask so neither the value nor its length
+        # leaks to the screen; TOTP is excluded entirely (fetched live
+        # at copy time). Copying still uses the real value.
+        hidden = hidden_field_labels(data)
         self._field_values = {
-            label: field_value(data, label) for label in labels if label != "totp"
+            label: (HIDDEN_PREVIEW if label in hidden else field_value(data, label))
+            for label in labels
+            if label != "totp"
         }
         screen = FieldScreen(ref=ref, labels=labels, message=message)
         self.screen = screen

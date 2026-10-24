@@ -86,8 +86,12 @@ Bind `pass-tui` (or `bin/pass-tui`) to a key in your window manager or shell.
 - The list renders fixed-width columns (title, type badge, url, vault), colored
   when the terminal supports colors.
 - The field menu uses the same style: fixed-width (kind, value) columns with a
-  short dimmed preview of each value after it (TOTP never shows a preview; its
-  code is fetched live at copy time).
+  short dimmed preview of each value after it. **Hidden fields are censored**:
+  passwords, PINs, card numbers, private keys, SSN/passport/license numbers,
+  TOTP, and any extra/custom field whose content kind is `Hidden` or `Totp`
+  show a fixed-length `••••••` mask (so neither the value nor its length
+  leaks). Usernames, emails, urls, notes, and `Text`/`Timestamp` fields are
+  shown in full. Copying always copies the real value.
 - In the field menu, `Enter` copies the field's value to the clipboard and
   **quits the program** (like rofi). The last-copied item's menu reopens on the
   next launch within `PASS_TUI_REOPEN_SECONDS` (default 20 s). `Esc` goes back
@@ -130,7 +134,9 @@ host, how many cached items have urls, and how many matched.
   `item_id`, so duplicate titles can never open the wrong item.
 - Secrets are fetched only when an item is opened or a field is copied, passed
   through pipes, and written straight to the clipboard — never written to disk
-  by this tool and never printed to the screen.
+  by this tool and never printed to the screen. The field view censors hidden
+  fields (passwords, PINs, card numbers, private keys, SSN/passport/license
+  numbers, TOTP, and `Hidden`/`Totp` extra fields) behind a fixed-length mask.
 - Cache and state files are written atomically with `0600` permissions.
 - Field values are never logged; debug logging records only titles, ids and
   error messages.

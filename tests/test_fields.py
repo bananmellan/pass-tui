@@ -1,6 +1,6 @@
 import json
 
-from pass_tui.fields import field_labels, field_value
+from pass_tui.fields import HIDDEN_PREVIEW, field_labels, field_value, hidden_field_labels
 
 VIEW = {
     "item": {
@@ -588,3 +588,122 @@ def test_labels_never_duplicate():
     labels = field_labels(data)
     assert labels == ["note", "username", "password", "totp", "url: https://a.com", "field: PIN"]
     assert field_value(data, "field: PIN") == "1"
+
+
+# ------------------------------------------------------------ censoring
+
+
+def test_hidden_field_labels_login():
+    """Passwords and TOTP are censored; username/email/urls/note are not."""
+    hidden = hidden_field_labels(VIEW)
+    assert "password" in hidden
+    assert "totp" in hidden
+    assert "username" not in hidden
+    assert "note" not in hidden
+    assert "url: https://github.com" not in hidden
+    assert "field: API key" in hidden  # Hidden content kind
+    # A Text-content field named "PIN" is shown, not censored: extra
+    # fields are censored by content kind, not by name.
+    assert "field: PIN" not in hidden
+
+
+def test_hidden_field_labels_credit_card():
+    data = {
+        "item": {
+            "content": {
+                "title": "Visa",
+                "content": {
+                    "CreditCard": {
+                        "cardholder_name": "Ada",
+                        "card_type": "Visa",
+                        "number": "4111",
+                        "verification_number": "123",
+                        "expiration_date": "12/28",
+                        "pin": "0000",
+                    }
+                },
+            }
+        }
+    }
+    hidden = hidden_field_labels(data)
+    assert "number" in hidden
+    assert "verification_number" in hidden
+    assert "pin" in hidden
+    assert "cardholder_name" not in hidden
+    assert "expiration_date" not in hidden
+
+
+def test_hidden_field_labels_identity_ssn_passport_license():
+    data = {
+        "item": {
+            "content": {
+                "title": "Ada",
+                "content": {
+                    "Identity": {
+                        "full_name": "Ada",
+                        "email": "ada@example.com",
+                        "social_security_number": "123",
+                        "passport_number": "P1",
+                        "license_number": "L1",
+                        "phone_number": "+46",
+                    }
+                },
+            }
+        }
+    }
+    hidden = hidden_field_labels(data)
+    assert "social_security_number" in hidden
+    assert "passport_number" in hidden
+    assert "license_number" in hidden
+    assert "full_name" not in hidden
+    assert "email" not in hidden
+    assert "phone_number" not in hidden
+
+
+def test_hidden_field_labels_ssh_and_wifi():
+    ssh = {"item": {"content": {"title": "k", "content": {
+        "SshKey": {"private_key": "PRIV", "public_key": "PUB", "sections": []}}}}}
+    assert hidden_field_labels(ssh) == {"private_key"}
+    wifi = {"item": {"content": {"title": "w", "content": {
+        "Wifi": {"ssid": "net", "password": "pw", "security": "Wpa2", "sections": []}}}}}
+    assert hidden_field_labels(wifi) == {"password"}
+
+
+def test_hidden_field_labels_custom_and_group_fields_by_content_kind():
+    """Custom/section extra fields are censored by content kind
+    (Hidden/Totp), not by name — a Text field named 'PIN' is shown."""
+    data = {
+        "item": {
+            "content": {
+                "title": "Router",
+                "content": {
+                    "Custom": {
+                        "sections": [
+                            {
+                                "section_name": "Admin",
+                                "section_fields": [
+                                    {"name": "pass", "content": {"Hidden": "p4ss"}},
+                                    {"name": "PIN", "content": {"Text": "1234"}},
+                                    {"name": "code", "content": {"Totp": "otpauth://x"}},
+                                ],
+                            }
+                        ]
+                    }
+                },
+                "extra_fields": [
+                    {"name": "Renewed", "content": {"Timestamp": 1735689600}},
+                ],
+            }
+        }
+    }
+    hidden = hidden_field_labels(data)
+    assert "Admin: pass" in hidden
+    assert "Admin: code" in hidden
+    assert "Admin: PIN" not in hidden  # Text content is not censored
+    assert "field: Renewed" not in hidden
+
+
+def test_hidden_preview_is_fixed_length():
+    """The mask never leaks the secret's length."""
+    assert HIDDEN_PREVIEW == "••••••"
+    assert len(HIDDEN_PREVIEW) == 6

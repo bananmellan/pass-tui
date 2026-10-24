@@ -691,6 +691,62 @@ def test_alias_item_opens_with_readable_email_field(tmp_path):
     assert clipboard.written == ["affection_thorn212@slmail.me"]
 
 
+def test_field_previews_censor_hidden_fields(tmp_path):
+    """The on-screen preview map must mask hidden fields (password, PIN,
+    Hidden-content extra fields, totp) and show open fields in full.
+    Copying must still use the real values."""
+    from pass_tui.fields import HIDDEN_PREVIEW
+
+    view = json.dumps(
+        {
+            "item": {
+                "content": {
+                    "title": "GitHub",
+                    "note": "work account",
+                    "content": {
+                        "Login": {
+                            "username": "me",
+                            "password": "s3cret",
+                            "urls": ["https://github.com"],
+                            "totp_uri": "otpauth://totp/x",
+                        }
+                    },
+                    "extra_fields": [
+                        {"name": "API key", "content": {"Hidden": "sk-123"}},
+                        {"name": "Recovery", "content": {"Text": "blue"}},
+                    ],
+                }
+            }
+        }
+    )
+    clipboard = FakeClipboard()
+    app = make_app(tmp_path, client=FakeClient(view=view), clipboard=clipboard, refs=[ref()])
+    app.start()
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    previews = app.field_values()
+    # Open fields show their value.
+    assert previews["note"] == "work account"
+    assert previews["username"] == "me"
+    assert previews["url: https://github.com"] == "https://github.com"
+    assert previews["field: Recovery"] == "blue"
+    # Hidden fields show the fixed mask — the real value appears nowhere
+    # in the preview map.
+    assert previews["password"] == HIDDEN_PREVIEW
+    assert previews["field: API key"] == HIDDEN_PREVIEW
+    assert "totp" not in previews
+    assert "s3cret" not in json.dumps(previews)
+    assert "sk-123" not in json.dumps(previews)
+    # Copying still copies the real secret.
+    labels = app.screen.labels
+    idx = labels.index("password")
+    for _ in range(idx):
+        app.handle_key("down")
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
+    assert clipboard.written == ["s3cret"]
+
+
 def test_verbose_log_records_decisions(tmp_path):
     messages = []
     config = Config(cache_dir=str(tmp_path / "cache"), verbose=True)
