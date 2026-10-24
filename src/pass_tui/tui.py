@@ -8,7 +8,7 @@ in app.py; this module only draws.
 Key bindings (in addition to the arrow keys, page up/down, home/end):
 
 - enter: ``Return``, ``Ctrl+m`` or ``Ctrl+j``
-- back/quit: ``Esc`` or ``Ctrl+g``
+- back/quit: ``Esc`` or ``Ctrl+l``
 - up/down: arrow keys, ``Ctrl+p`` / ``Ctrl+n`` (emacs style)
 - refresh: ``Ctrl+r``; quit: ``Ctrl+c``
 
@@ -83,8 +83,8 @@ def _key_name(ch: int) -> str:
         return "enter"
     if ch == 27:
         return "esc"
-    if ch == 7:
-        return "esc"  # Ctrl+g
+    if ch == 12:
+        return "esc"  # Ctrl+l
     if ch in (curses.KEY_BACKSPACE, 127, 8):
         return "backspace"
     if ch == 9:
@@ -209,7 +209,7 @@ def _draw_list(stdscr, app: App) -> None:
     status = f"{len(visible)}/{len(screen.refs)} items"
     if screen.message:
         status = f"{screen.message}  \u2014  {status}"
-    status += "  \u00b7  enter: open  esc/ctrl-g: back/quit  ctrl-r: refresh"
+    status += "  \u00b7  enter: open  esc/ctrl-l: back/quit  ctrl-r: refresh"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
     stdscr.move(1, min(2 + len(screen.query), width - 1))
     stdscr.refresh()
@@ -329,7 +329,7 @@ def _draw_fields(stdscr, app: App, field_values: dict[str, str] | None = None) -
     status = f"{len(visible)} fields"
     if screen.message:
         status = f"{screen.message}  \u2014  {status}"
-    status += "  \u00b7  enter: copy  esc/ctrl-g: back"
+    status += "  \u00b7  enter: copy  esc/ctrl-l: back"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
     stdscr.move(1, min(2 + len(screen.query), width - 1))
     stdscr.refresh()

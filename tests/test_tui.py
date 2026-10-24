@@ -111,10 +111,10 @@ def test_key_name_symbolic():
 
 
 def test_key_name_emacs_bindings():
-    # Ctrl+n / Ctrl+p navigate, Ctrl+g is back/quit, Ctrl+j is enter.
+    # Ctrl+n / Ctrl+p navigate, Ctrl+l is back/quit, Ctrl+j is enter.
     assert tui._key_name(14) == "down"  # Ctrl+n
     assert tui._key_name(16) == "up"  # Ctrl+p
-    assert tui._key_name(7) == "esc"  # Ctrl+g
+    assert tui._key_name(12) == "esc"  # Ctrl+l
     assert tui._key_name(10) == "enter"  # Ctrl+j
 
 
@@ -593,10 +593,10 @@ def test_pty_ctrl_p_moves_up(tmp_path):
     assert opened == ["i2"]  # Ctrl+n then Ctrl+p: back on Bank
 
 
-def test_pty_ctrl_g_goes_back_from_fields(tmp_path):
-    rc = _run_in_pty(tmp_path, [b"\r", b"\x07", b"\x1b"], [ref()])
+def test_pty_ctrl_l_goes_back_from_fields(tmp_path):
+    rc = _run_in_pty(tmp_path, [b"\r", b"\x0c", b"\x1b"], [ref()])
     assert rc == 0
-    # Ctrl+g returned to the list, so no second open happened.
+    # Ctrl+l returned to the list, so no second open happened.
     opened = (tmp_path / "cache" / "opened.txt").read_text().split()
     assert opened == ["i1"]
 

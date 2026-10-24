@@ -60,7 +60,7 @@ def test_write_pipes_value_to_copy_tool():
 
 
 def test_read_survives_non_utf8_clipboard():
-    """A clipboard holding binary data (e.g. an image) must not crash rofi."""
+    """A clipboard holding binary data (e.g. an image) must not crash the app."""
     import pass_tui.clipboard as clip_mod
 
     def fake_run(argv, input=None, stdout=None, stderr=None, check=None):

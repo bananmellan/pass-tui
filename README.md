@@ -1,10 +1,8 @@
 # pass-tui
 
 A fast, secure **terminal UI** for [Proton Pass](https://proton.me/pass), built on
-the official [`pass-cli`](https://protonpass.github.io/pass-cli/). No rofi, no
-GUI toolkit — just run it from a terminal. (This is a rewrite of the original
-bash/fish rofi prototype, and of the intermediate rofi-based Python version,
-into a self-contained curses application.)
+the official [`pass-cli`](https://protonpass.github.io/pass-cli/). No GUI
+toolkit — just run it from a terminal.
 
 ## Features
 
@@ -82,7 +80,7 @@ Bind `pass-tui` (or `bin/pass-tui`) to a key in your window manager or shell.
   then fuzzy subsequence for tokens of 3+ characters).
 - `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`) move the selection; `Enter` opens
   the selected item's field menu. Emacs-style binds also work: `Ctrl+n`/`Ctrl+p`
-  move down/up, `Ctrl+m` (or `Ctrl+j`) is enter, `Ctrl+g` is back/quit.
+  move down/up, `Ctrl+m` (or `Ctrl+j`) is enter, `Ctrl+l` is back/quit.
 - The list renders fixed-width columns (title, type badge, url, vault), colored
   when the terminal supports colors.
 - The field menu uses the same style: fixed-width (kind, value) columns with a
@@ -118,9 +116,9 @@ Bind `pass-tui` (or `bin/pass-tui`) to a key in your window manager or shell.
 | `PASS_TUI_DEBUG` | unset | set to `1` to log to `debug.log` |
 | `PASS_TUI_VERBOSE` | unset | set to `1` (or pass `--verbose`) to log decision points (clipboard content, extracted host, cache stats, match count) to stderr and `debug.log` |
 
-The legacy `PASS_ROFI_*` variables from the previous rofi-based version are
-still honored as fallbacks, and an existing `$XDG_CACHE_HOME/pass-rofi` cache
-directory is reused if no `pass-tui` directory exists yet.
+The legacy `PASS_ROFI_*` environment variables are still honored as fallbacks,
+and an existing `$XDG_CACHE_HOME/pass-rofi` cache directory is reused if no
+`pass-tui` directory exists yet.
 
 Debugging: run `pass-tui --verbose` (or `PASS_TUI_VERBOSE=1 pass-tui`) with a
 URL in the clipboard and watch stderr — or `tail -f

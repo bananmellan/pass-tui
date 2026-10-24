@@ -10,7 +10,7 @@ from .models import ItemRef
 
 
 class StateStore:
-    """Small on-disk state: current rofi stage, last copied item, open item."""
+    """Small on-disk state: current stage, last copied item, open item."""
 
     def __init__(self, cache_dir: Path) -> None:
         self.dir = cache_dir

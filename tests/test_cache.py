@@ -94,7 +94,7 @@ def test_dedup_refs_dedups_same_id_with_different_titles(tmp_path):
 
 def test_load_cache_dedups_stale_file(tmp_path):
     """A cache file written by an older version with duplicate entries is
-    deduped on load so rofi never shows the same item twice."""
+    deduped on load so the list never shows the same item twice."""
     path = tmp_path / CACHE_NAME
     payload = {
         "version": 1,

@@ -158,7 +158,7 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
         # The same item can appear more than once in a vault listing (e.g.
         # pass-cli re-emits it when the vault response is paginated oddly, or
         # a shared item shows up in two shares). Dedup on item_id — Proton
-        # Pass item ids are globally unique — so the rofi list never shows
+        # Pass item ids are globally unique — so the list never shows
         # the same item twice.
         if item_id in seen:
             continue

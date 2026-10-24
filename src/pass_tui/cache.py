@@ -63,9 +63,8 @@ def load_cache(path: Path) -> list[ItemRef]:
 def sort_refs(refs: list[ItemRef]) -> list[ItemRef]:
     """Sort items for display: title A-Z (case-insensitive), vault as tiebreak.
 
-    This is the order rows are printed in; rofi keeps this order when no
-    filter is active and re-ranks matches when one is (levenshtein, unless
-    the user toggles fzf sorting).
+    This is the order rows are printed in; it is kept when no filter is
+    active, and matches are re-ranked when one is.
     """
     return sorted(refs, key=lambda ref: (ref.title.lower(), ref.vault_name.lower()))
 
