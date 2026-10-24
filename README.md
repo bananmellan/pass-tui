@@ -54,9 +54,17 @@ toolkit — just run it from a terminal.
 ## Requirements
 
 - Python >= 3.10 (standard library only — curses ships with CPython)
-- `pass-cli` — log in once with `pass-cli login` (web flow); the session
-  persists across launches. If pass-tui finds no valid session (e.g.
-  first run on a new machine), it prompts for a [personal access
+- `pass-cli` — log in once with `pass-cli login` (web flow). To keep the
+  session across reboots on Linux, set `PROTON_PASS_LINUX_KEYRING=dbus`
+  so pass-cli stores its encryption key in the desktop Secret Service
+  (e.g. GNOME Keyring, unlocked at login) instead of the kernel keyring
+  that is wiped on every reboot. To require a PIN after inactivity,
+  create a [session
+  lock](https://protonpass.github.io/pass-cli/commands/session/):
+  `pass-cli session create-lock --idle-timeout 600` (30–900 s; 600 =
+  10 minutes). pass-tui detects a locked session and prompts for the
+  lock code. If pass-tui finds no session at all (e.g. first run on a
+  new machine), it prompts for a [personal access
   token](https://protonpass.github.io/pass-cli/get-started/configuration/#personal-access-tokens)
   and logs in with it instead. Note that token sessions expire after 2
   hours, so for daily use the one-time `pass-cli login` is the better
@@ -144,15 +152,23 @@ host, how many cached items have urls, and how many matched.
 - Cache and state files are written atomically with `0600` permissions.
 - Field values are never logged; debug logging records only titles, ids and
   error messages.
-- When pass-cli is not authenticated, pass-tui prompts for a personal
-  access token with terminal echo disabled. The token is passed straight
-  to `pass-cli login --personal-access-token` and is never printed, logged
-  or written to disk by pass-tui. PAT sessions last only 2 hours, so an
-  interactive web login (`pass-cli login`) is recommended for regular use;
-  the token prompt is the fallback for headless or fresh machines. If you
-  do use a token, create it with the longest expiry (up to 1 year) via
-  `pass-cli pat create --name pass-tui --expiration 1y`, then grant vault
-  access with `pass-cli pat access grant`.
+- pass-tui's startup gate distinguishes three pass-cli states: unlocked
+  (start immediately), locked by a session lock (prompt for the lock
+  code, hidden input), and logged out (prompt for a personal access
+  token, hidden input). Lock codes and tokens are passed to pass-cli
+  from memory over a pipe/pty — never via argv (visible in the process
+  list), never printed, never logged and never written to disk by
+  pass-tui. PAT sessions last only 2 hours, so an interactive web login
+  (`pass-cli login`) is recommended for regular use; the token prompt is
+  the fallback for headless or fresh machines. If you do use a token,
+  create it with the longest expiry (up to 1 year) via `pass-cli pat
+  create --name pass-tui --expiration 1y`, then grant vault access with
+  `pass-cli pat access grant`.
+- Session locks are enforced server-side by Proton: even if local state
+  is tampered with, API calls are rejected until the session is
+  unlocked. The lock code is never stored anywhere — if you forget it,
+  `pass-cli logout` and log in again. Note that PAT sessions cannot have
+  a session lock.
 
 ## Development
 
@@ -166,6 +182,7 @@ Layout:
 bin/pass-tui             launcher for running from a checkout
 src/pass_tui/
   cli.py                 entry point: arg parsing, --rebuild, tty check
+  auth.py                startup auth gate: unlocked / locked (PIN) / token login
   app.py                 UI-agnostic controller (screens + key handling)
   tui.py                 curses rendering and key translation
   search.py              live filtering (token substring/subsequence ranking)

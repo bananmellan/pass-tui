@@ -3,7 +3,17 @@ import json
 import pytest
 
 from pass_tui.models import ItemRef, Vault
-from pass_tui.passcli import PassCli, PassCliError, parse_item_view, parse_items, parse_vaults
+from pass_tui.passcli import (
+    SESSION_LOCKED,
+    SESSION_LOGGED_OUT,
+    SESSION_UNLOCKED,
+    PassCli,
+    PassCliError,
+    SessionLockedError,
+    parse_item_view,
+    parse_items,
+    parse_vaults,
+)
 
 
 def make_client(routes):
@@ -596,16 +606,19 @@ def test_totp_uses_pass_uri():
     assert seen[0][-1] == "pass://s1/i1/totp"
 
 
-def test_is_authenticated_true_when_info_succeeds():
+def test_is_authenticated_true_when_session_usable():
     seen = []
 
     def runner(argv):
         seen.append(argv)
-        return "- Release track: stable\n"
+        if argv[1] == "info":
+            return "- Release track: stable\n"
+        return '{"vaults": []}'
 
     client = PassCli("pass-cli", runner=runner)
     assert client.is_authenticated() is True
-    assert seen == [["pass-cli", "info"]]
+    # info alone cannot tell locked from unlocked; vault list confirms.
+    assert seen == [["pass-cli", "info"], ["pass-cli", "vault", "list", "--output", "json"]]
 
 
 def test_is_authenticated_false_when_info_fails():
@@ -622,6 +635,104 @@ def test_is_authenticated_false_when_binary_missing():
 
     client = PassCli("pass-cli", runner=runner)
     assert client.is_authenticated() is False
+
+
+def test_is_authenticated_false_when_session_locked():
+    def runner(argv):
+        if argv[1] == "info":
+            return "- Session has lock: yes\n"
+        raise PassCliError("Error: SessionLocked: session is locked")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.is_authenticated() is False
+
+
+def test_session_state_unlocked():
+    def runner(argv):
+        if argv[1] == "info":
+            return "- Username: tester\n"
+        return '{"vaults": []}'
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.session_state() == SESSION_UNLOCKED
+
+
+def test_session_state_locked():
+    def runner(argv):
+        if argv[1] == "info":
+            return "- Session has lock: yes\n"
+        raise PassCliError("Error: SessionLocked: the session is locked")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.session_state() == SESSION_LOCKED
+
+
+def test_session_state_logged_out_when_no_session():
+    def runner(argv):
+        raise PassCliError("no authenticated client, please login")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.session_state() == SESSION_LOGGED_OUT
+
+
+def test_session_state_logged_out_when_api_call_fails_unrelated():
+    """info succeeds but the authenticated call fails for a non-lock
+    reason (e.g. network): treated as logged out, not locked."""
+    def runner(argv):
+        if argv[1] == "info":
+            return "- Username: tester\n"
+        raise PassCliError("connection refused")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.session_state() == SESSION_LOGGED_OUT
+
+
+def test_unlock_session_success():
+    seen = []
+
+    def pty_runner(argv, code):
+        seen.append((argv, code))
+        return "Enter lock code: \nSession unlocked successfully\n", False
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    client.unlock_session("1234")
+    assert seen == [(["pass-cli", "session", "unlock"], "1234")]
+
+
+def test_unlock_session_wrong_code():
+    def pty_runner(argv, code):
+        return "Enter lock code: \nError: SessionLocked: wrong lock code\n", False
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(SessionLockedError):
+        client.unlock_session("0000")
+
+
+def test_unlock_session_timeout():
+    def pty_runner(argv, code):
+        return "Enter lock code: ", True
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(PassCliError):
+        client.unlock_session("1234")
+
+
+def test_unlock_session_empty_code_rejected():
+    def pty_runner(argv, code):
+        raise AssertionError("must not be called")
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(PassCliError):
+        client.unlock_session("")
+
+
+def test_unlock_session_generic_failure_reports_last_line():
+    def pty_runner(argv, code):
+        return "Enter lock code: \nsome failure\nError: boom\n", False
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(PassCliError, match="boom"):
+        client.unlock_session("1234")
 
 
 def test_login_with_token_passes_token_flag():

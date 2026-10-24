@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import pty
+import select
+import signal
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Iterable
 
@@ -11,6 +16,25 @@ from .models import ItemRef, Vault
 
 class PassCliError(RuntimeError):
     pass
+
+
+class SessionLockedError(PassCliError):
+    """The pass-cli session exists but is locked by a session lock."""
+
+
+# Outcome of probing the pass-cli session state.
+SESSION_UNLOCKED = "unlocked"  # session exists and answers API calls
+SESSION_LOCKED = "locked"  # session exists but is locked (needs lock code)
+SESSION_LOGGED_OUT = "logged_out"  # no session at all
+
+# How long a locked-session probe may take before it is treated as
+# logged out (a locked session fails fast, so this is generous).
+_STATE_PROBE_TIMEOUT = 15.0
+
+# Transcript cap for the pty used by session unlock; the lock code
+# itself is never echoed by pass-cli (rpassword), so this only bounds
+# prompt text.
+_PTY_TRANSCRIPT_CAP = 8192
 
 
 def _run(argv: list[str], timeout: float | None = None) -> str:
@@ -32,6 +56,86 @@ def _run(argv: list[str], timeout: float | None = None) -> str:
         detail = (stderr or stdout or "").strip().splitlines()
         raise PassCliError(detail[-1] if detail else f"{argv[0]} failed")
     return stdout
+
+
+def _is_locked_error(exc: PassCliError) -> bool:
+    text = str(exc).lower()
+    return "sessionlocked" in text or "session is locked" in text or "locked session" in text
+
+
+def _reap(pid: int) -> None:
+    """Kill the child and anything it spawned, and wait until it is gone."""
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            try:
+                wpid, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                return
+            if wpid == pid:
+                return
+            time.sleep(0.05)
+
+
+def _run_pty(argv: list[str], code: str, timeout: float = 15.0) -> tuple[str, bool]:
+    """Run pass-cli under a pty and answer its lock-code prompt.
+
+    `pass-cli session unlock` reads the lock code from a real terminal
+    (rpassword), so piping stdin fails with "No such device or address".
+    The pty makes pass-cli see a terminal while the code is written to
+    the pty master straight from memory — it never appears in argv,
+    never in the transcript (pass-cli disables echo for the entry) and
+    is never written to disk.
+
+    Returns (transcript, timed_out). The transcript is capped and never
+    contains the code.
+    """
+    pid, fd = pty.fork()
+    if pid == 0:
+        try:
+            os.execvp(argv[0], argv)
+        except OSError:
+            os._exit(127)
+    transcript = b""
+    answered = False
+    timed_out = False
+    start = time.time()
+    while time.time() - start < timeout:
+        ready, _, _ = select.select([fd], [], [], 0.3)
+        if fd in ready:
+            try:
+                chunk = os.read(fd, 1024)
+            except OSError:
+                break
+            if not chunk:
+                break
+            if len(transcript) < _PTY_TRANSCRIPT_CAP:
+                transcript += chunk[: _PTY_TRANSCRIPT_CAP - len(transcript)]
+            if not answered and b"lock code" in transcript.lower():
+                try:
+                    os.write(fd, (code + "\n").encode())
+                except OSError:
+                    pass
+                answered = True
+        if not os.path.exists(f"/proc/{pid}"):
+            time.sleep(0.2)
+            break
+    else:
+        timed_out = True
+    _reap(pid)
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    return transcript.decode("utf-8", errors="replace"), timed_out
 
 
 def _run_json(argv: list[str], timeout: float | None = None) -> Any:
@@ -193,16 +297,18 @@ class PassCli:
         runner: Callable[[list[str]], str] | None = None,
         timeout: float = 60.0,
         max_workers: int = 8,
+        pty_runner: Callable[[list[str], str], tuple[str, bool]] | None = None,
     ) -> None:
         self.binary = binary
         self._runner = runner
         self.timeout = timeout
         self.max_workers = max_workers
+        self._pty_runner = pty_runner or _run_pty
 
-    def _exec(self, argv: list[str]) -> str:
+    def _exec(self, argv: list[str], timeout: float | None = None) -> str:
         if self._runner is not None:
             return self._runner(argv)
-        return _run(argv, timeout=self.timeout)
+        return _run(argv, timeout=timeout if timeout is not None else self.timeout)
 
     def _exec_json(self, argv: list[str]) -> Any:
         out = self._exec(argv)
@@ -212,16 +318,60 @@ class PassCli:
             raise PassCliError(f"invalid JSON from {' '.join(argv)}") from exc
 
     def is_authenticated(self) -> bool:
-        """True when pass-cli has a valid session.
+        """True when pass-cli has a session that is not locked.
 
-        `pass-cli info` fails (non-zero exit) when there is no session,
-        so the exit code is the whole check.
+        Kept for compatibility: True exactly when session_state() is
+        SESSION_UNLOCKED.
+        """
+        return self.session_state() == SESSION_UNLOCKED
+
+    def session_state(self) -> str:
+        """Classify the pass-cli session: SESSION_UNLOCKED, SESSION_LOCKED
+        or SESSION_LOGGED_OUT.
+
+        `pass-cli info` succeeds whenever a session exists, locked or
+        not (the lock is enforced server-side on API calls), so the real
+        state comes from a cheap authenticated call, `vault list`. Its
+        stderr distinguishes a locked session (SessionLocked) from a
+        missing one. A missing pass-cli binary counts as logged out.
         """
         try:
-            self._exec([self.binary, "info"])
+            self._exec([self.binary, "info"], timeout=_STATE_PROBE_TIMEOUT)
         except PassCliError:
-            return False
-        return True
+            return SESSION_LOGGED_OUT
+        try:
+            self._exec(
+                [self.binary, "vault", "list", "--output", "json"],
+                timeout=_STATE_PROBE_TIMEOUT,
+            )
+        except PassCliError as exc:
+            if _is_locked_error(exc):
+                return SESSION_LOCKED
+            return SESSION_LOGGED_OUT
+        return SESSION_UNLOCKED
+
+    def unlock_session(self, code: str) -> None:
+        """Unlock a locked session with its lock code.
+
+        The code is typed by the user with echo off and handed to
+        pass-cli over a pty — never via argv (visible in the process
+        list) and never written to disk. Raises SessionLockedError when
+        the code is wrong, PassCliError on other failures.
+        """
+        if not code:
+            raise PassCliError("empty lock code")
+        transcript, timed_out = self._pty_runner(
+            [self.binary, "session", "unlock"], code
+        )
+        if timed_out:
+            raise PassCliError("timed out waiting for pass-cli session unlock")
+        lowered = transcript.lower()
+        if "successfully" in lowered:
+            return
+        if "sessionlocked" in lowered or "wrong" in lowered or "invalid" in lowered:
+            raise SessionLockedError("wrong lock code")
+        last = transcript.strip().splitlines()
+        raise PassCliError(last[-1] if last else "session unlock failed")
 
     def login_with_token(self, token: str) -> None:
         """Log in with a personal access token (pst_...::KEY).
