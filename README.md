@@ -54,11 +54,13 @@ toolkit — just run it from a terminal.
 ## Requirements
 
 - Python >= 3.10 (standard library only — curses ships with CPython)
-- `pass-cli` — if it has no valid session when pass-tui starts, pass-tui
-  prompts for a [personal access
+- `pass-cli` — log in once with `pass-cli login` (web flow); the session
+  persists across launches. If pass-tui finds no valid session (e.g.
+  first run on a new machine), it prompts for a [personal access
   token](https://protonpass.github.io/pass-cli/get-started/configuration/#personal-access-tokens)
-  and logs in with it, so you no longer need to run `pass-cli login`
-  first
+  and logs in with it instead. Note that token sessions expire after 2
+  hours, so for daily use the one-time `pass-cli login` is the better
+  option
 - `wl-copy`/`wl-paste`, `xclip` or `xsel` for clipboard integration
 - A terminal with curses support
 
@@ -145,8 +147,12 @@ host, how many cached items have urls, and how many matched.
 - When pass-cli is not authenticated, pass-tui prompts for a personal
   access token with terminal echo disabled. The token is passed straight
   to `pass-cli login --personal-access-token` and is never printed, logged
-  or written to disk by pass-tui. Note that PAT sessions last 2 hours —
-  when one expires, relaunch pass-tui and paste a fresh token.
+  or written to disk by pass-tui. PAT sessions last only 2 hours, so an
+  interactive web login (`pass-cli login`) is recommended for regular use;
+  the token prompt is the fallback for headless or fresh machines. If you
+  do use a token, create it with the longest expiry (up to 1 year) via
+  `pass-cli pat create --name pass-tui --expiration 1y`, then grant vault
+  access with `pass-cli pat access grant`.
 
 ## Development
 

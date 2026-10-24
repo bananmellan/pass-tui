@@ -44,7 +44,15 @@ def prompt_for_token(
             file=stream,
         )
         print(
-            f"Create a personal access token at {_TOKEN_URL}",
+            "Run 'pass-cli login' to log in with your Proton account, or enter a",
+            file=stream,
+        )
+        print(
+            f"personal access token (created at {_TOKEN_URL}); note that",
+            file=stream,
+        )
+        print(
+            "token sessions expire after 2 hours and will ask again.",
             file=stream,
         )
         try:
