@@ -110,6 +110,14 @@ def test_key_name_symbolic():
     assert tui._key_name(18) == "ctrl_r"
 
 
+def test_key_name_emacs_bindings():
+    # Ctrl+n / Ctrl+p navigate, Ctrl+g is back/quit, Ctrl+j is enter.
+    assert tui._key_name(14) == "down"  # Ctrl+n
+    assert tui._key_name(16) == "up"  # Ctrl+p
+    assert tui._key_name(7) == "esc"  # Ctrl+g
+    assert tui._key_name(10) == "enter"  # Ctrl+j
+
+
 def test_key_name_printable():
     assert tui._key_name(ord("a")) == "a"
     assert tui._key_name(ord("Z")) == "Z"
@@ -128,7 +136,8 @@ def test_truncate():
 
 
 class StubWindow:
-    """Minimal stand-in for a curses window: records addnstr calls."""
+    """Minimal stand-in for a curses window: overlays addnstr segments
+    into a character grid so multi-segment rows render correctly."""
 
     def __init__(self, height=24, width=80):
         self.height = height
@@ -144,7 +153,9 @@ class StubWindow:
         self.cells = {}
 
     def addnstr(self, y, x, text, n, attr=0):
-        self.cells[(y, x)] = (text[:n], attr)
+        for i, ch in enumerate(text[:n]):
+            if 0 <= y < self.height and 0 <= x + i < self.width:
+                self.cells[(y, x + i)] = (ch, attr)
 
     def move(self, y, x):
         self.cursor = (y, x)
@@ -152,11 +163,21 @@ class StubWindow:
     def refresh(self):
         self.refreshed += 1
 
+    def row_attr(self, y, x=0):
+        return self.cells.get((y, x), ("", 0))[1]
+
+    def row(self, y):
+        chars = [self.cells.get((y, x), (" ", 0))[0] for x in range(self.width)]
+        return "".join(chars)
+
     def text(self):
-        return "\n".join(
-            "".join(self.cells.get((y, x), ("", 0))[0] for x in range(self.width))
-            for y in range(self.height)
-        )
+        lines = []
+        for y in range(self.height):
+            chars = [self.cells.get((y, x), (None, 0))[0] for x in range(self.width)]
+            lines.append(
+                "".join(ch if ch is not None else " " for ch in chars).rstrip()
+            )
+        return "\n".join(lines)
 
 
 def test_draw_list_shows_items_and_prompt(tmp_path):
@@ -166,7 +187,7 @@ def test_draw_list_shows_items_and_prompt(tmp_path):
     tui._draw_list(win, app)
     text = win.text()
     assert "Proton Pass" in text
-    assert "> " in text
+    assert win.row(1).startswith(">")
     assert "GitHub" in text
     assert "Bank" in text
     assert "https://github.com" in text
@@ -190,15 +211,17 @@ def test_draw_list_shows_type_badges(tmp_path):
     win = StubWindow()
     tui._draw_list(win, app)
     text = win.text()
-    assert "GitHub  ·  login" in text
-    assert "actress_revolving098@smail.me  ·  alias" in text
-    assert "Bank note  ·  note" in text
-    assert "Visa  ·  card" in text
-    # Unknown/empty type: no badge — the row shows only title, url, vault.
+    assert "GitHub" in text and "login" in text
+    assert "actress_revolving098@smail.me" in text and "alias" in text
+    assert "Bank note" in text and "note" in text
+    assert "Visa" in text and "card" in text
+    # Unknown/empty type: no badge text on the row.
     no_type_row = next(
         line for line in text.splitlines() if line.startswith("No type")
     )
-    assert no_type_row == "No type  ·  [Personal]"
+    assert "[Personal]" in no_type_row
+    for badge in ("login", "alias", "note", "card"):
+        assert f"·  {badge}" not in no_type_row
 
 
 def test_draw_fields_header_shows_type_badge(tmp_path):
@@ -249,6 +272,38 @@ def test_draw_list_marks_selected_row(tmp_path):
     assert win.cells[(2, 0)][1] == curses.A_NORMAL
 
 
+def test_draw_list_fixed_width_columns(tmp_path):
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",), "Personal"),
+        ref("s1", "i2", "B", ("https://b.example.com",), "Work"),
+    ]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    win = StubWindow()
+    tui._draw_list(win, app)
+    # Title-sorted: "B" is the first row, "GitHub" the second.
+    row_b = win.row(2)
+    row_g = win.row(3)
+    # Badge and url columns start at the same offset on every row.
+    assert row_b.index("login") == row_g.index("login")
+    assert row_b.index("https://") == row_g.index("https://")
+    # The vault column is right-aligned: both rows end at the same edge.
+    assert row_b.rstrip().endswith("[Work]")
+    assert row_g.rstrip().endswith("[Personal]")
+    assert len(row_b.rstrip()) == len(row_g.rstrip())
+
+
+def test_draw_list_narrow_terminal_keeps_title_column(tmp_path):
+    refs = [ref("s1", "i1", "GitHub", ("https://github.com",), "Personal")]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    win = StubWindow(height=10, width=30)
+    tui._draw_list(win, app)
+    # Nothing overflows the screen width.
+    for y in range(win.height):
+        assert len(win.row(y).rstrip()) <= 29
+
+
 def test_draw_fields_shows_labels(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
@@ -264,18 +319,27 @@ def test_draw_fields_shows_labels(tmp_path):
     assert "enter: copy" in text
 
 
-def test_draw_fields_shows_copy_message(tmp_path):
-    app = make_app(tmp_path, refs=[ref()])
+def test_draw_fields_failed_copy_message(tmp_path):
+    clipboard = FakeClipboard()
+
+    def fail(value):
+        from pass_tui.clipboard import ClipboardError
+
+        raise ClipboardError("no clipboard")
+
+    clipboard.write = fail
+    app = make_app(tmp_path, clipboard=clipboard, refs=[ref()])
     app.start()
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
-    app.handle_key("enter")
+    screen = app.handle_key("enter")
+    assert screen.message == "Nothing to copy"
     win = StubWindow()
     tui._draw_fields(win, app)
-    assert "Copied password" in win.text()
+    assert "Nothing to copy" in win.text()
 
 
 def test_draw_list_truncates_long_lines(tmp_path):
@@ -284,8 +348,7 @@ def test_draw_list_truncates_long_lines(tmp_path):
     app.start()
     win = StubWindow(height=24, width=40)
     tui._draw_list(win, app)
-    row = win.cells[(2, 0)][0]
-    assert len(row) <= 39
+    assert len(win.row(2).rstrip()) <= 39
 
 
 def test_draw_scrolls_when_selection_moves_past_view(tmp_path):
@@ -365,6 +428,8 @@ VIEW = json.dumps({"item": {"content": {"title": "GitHub", "note": "", "content"
 
 class C:
     def view_item_with_retry(self, ref):
+        with open(cache_dir / "opened.txt", "a") as fh:
+            fh.write(ref.item_id + chr(10))
         return json.loads(VIEW)
     def totp(self, ref):
         return "123456"
@@ -398,6 +463,40 @@ def test_pty_type_to_filter_then_quit(tmp_path):
     refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
     rc = _run_in_pty(tmp_path, [b"bank", b"\x1b", b"\x1b"], refs)
     assert rc == 0
+
+
+def test_pty_copy_quits_program(tmp_path):
+    """Copying a field must end the program, like rofi."""
+    rc = _run_in_pty(tmp_path, [b"\r", b"\r"], [ref()])
+    assert rc == 0
+    copied = (tmp_path / "cache" / "copied.txt").read_text()
+    # First copyable field of the Login view is the username.
+    assert copied == "me"
+
+
+def test_pty_ctrl_n_moves_down(tmp_path):
+    # Title-sorted: Bank (i2) first, GitHub (i1) second.
+    refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
+    rc = _run_in_pty(tmp_path, [b"\x0e", b"\r", b"\x1b", b"\x1b"], refs)
+    assert rc == 0
+    opened = (tmp_path / "cache" / "opened.txt").read_text().split()
+    assert opened == ["i1"]  # Ctrl+n selected GitHub
+
+
+def test_pty_ctrl_p_moves_up(tmp_path):
+    refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
+    rc = _run_in_pty(tmp_path, [b"\x0e", b"\x10", b"\r", b"\x1b", b"\x1b"], refs)
+    assert rc == 0
+    opened = (tmp_path / "cache" / "opened.txt").read_text().split()
+    assert opened == ["i2"]  # Ctrl+n then Ctrl+p: back on Bank
+
+
+def test_pty_ctrl_g_goes_back_from_fields(tmp_path):
+    rc = _run_in_pty(tmp_path, [b"\r", b"\x07", b"\x1b"], [ref()])
+    assert rc == 0
+    # Ctrl+g returned to the list, so no second open happened.
+    opened = (tmp_path / "cache" / "opened.txt").read_text().split()
+    assert opened == ["i1"]
 
 
 def test_pty_ctrl_c_quits(tmp_path):

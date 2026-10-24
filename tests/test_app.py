@@ -222,9 +222,9 @@ def test_copy_then_launch_with_url_still_matches(tmp_path):
     assert isinstance(app.screen, FieldScreen)
     app.handle_key("down")  # note
     app.handle_key("down")  # password
-    screen = app.handle_key("enter")  # copy password
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")  # copy password -> quit
     assert clipboard.written == ["secret"]
-    assert isinstance(screen, FieldScreen)
     # Now the clipboard holds the secret; a URL launch must still match.
     app.clipboard = FakeClipboard("https://github.com")
     screen = app.start()
@@ -244,7 +244,8 @@ def test_reopen_after_copy_is_one_shot(tmp_path):
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
-    app.handle_key("enter")
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
     assert clipboard.written == ["secret"]
     assert app.state.get_last_copied() is not None
     # First relaunch: reopens the copied item.
@@ -299,7 +300,8 @@ def test_reopen_window_expired_shows_list(tmp_path):
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
-    app.handle_key("enter")
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
     assert clipboard.written == ["secret"]
     # Move beyond the 20 s reopen window.
     now[0] += 100
@@ -393,7 +395,7 @@ def test_fields_typing_filters_fields(tmp_path):
     assert "password" in screen.visible
 
 
-def test_field_enter_copies_value(tmp_path):
+def test_field_enter_copies_value_and_quits(tmp_path):
     client = FakeClient()
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
@@ -403,9 +405,34 @@ def test_field_enter_copies_value(tmp_path):
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
-    screen = app.handle_key("enter")
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
     assert clipboard.written == ["secret"]
-    assert "Copied" in screen.message
+    # The reopen-after-copy memory is armed before quitting.
+    assert app.state.get_last_copied() is not None
+
+
+def test_failed_copy_does_not_quit(tmp_path):
+    client = FakeClient()
+    clipboard = FakeClipboard()
+
+    def fail(value):
+        from pass_tui.clipboard import ClipboardError
+
+        raise ClipboardError("no clipboard")
+
+    clipboard.write = fail
+    app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
+    app.start()
+    app.handle_key("enter")
+    labels = app.screen.labels
+    idx = labels.index("password")
+    for _ in range(idx):
+        app.handle_key("down")
+    screen = app.handle_key("enter")
+    assert isinstance(screen, FieldScreen)
+    assert screen.message == "Nothing to copy"
+    assert clipboard.written == []
 
 
 def test_field_enter_copies_totp(tmp_path):
@@ -418,7 +445,8 @@ def test_field_enter_copies_totp(tmp_path):
     idx = labels.index("totp")
     for _ in range(idx):
         app.handle_key("down")
-    app.handle_key("enter")
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
     assert clipboard.written == ["123456"]
     assert client.totp_calls
 
@@ -433,7 +461,8 @@ def test_field_enter_copies_url(tmp_path):
     idx = labels.index(url_label)
     for _ in range(idx):
         app.handle_key("down")
-    app.handle_key("enter")
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
     assert clipboard.written == ["https://github.com"]
 
 
@@ -488,7 +517,8 @@ def test_ctrl_c_quits_and_clears_reopen_memory(tmp_path):
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
-    app.handle_key("enter")
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
     assert app.state.get_last_copied() is not None
     with pytest.raises(QuitRequested):
         app.handle_key("ctrl_c")
@@ -550,8 +580,9 @@ def test_item_with_only_extra_fields_opens(tmp_path):
     assert isinstance(screen, FieldScreen)
     assert "field: iPhone PIN" in screen.labels
     assert "field: MacBook" in screen.labels
-    # Copy the first extra field.
-    screen = app.handle_key("enter")
+    # Copy the first extra field; copying quits.
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
     assert clipboard.written == ["1234"]
 
 
@@ -563,6 +594,43 @@ def test_no_readable_fields_returns_to_list(tmp_path):
     screen = app.handle_key("enter")
     assert isinstance(screen, ListScreen)
     assert "No readable fields" in screen.message
+
+
+def test_alias_item_opens_with_readable_email_field(tmp_path):
+    """Regression: alias items must expose their address as a copyable
+    field instead of "No readable fields" (address lives at top-level
+    item.alias_email)."""
+    view = json.dumps(
+        {
+            "item": {
+                "id": "i1",
+                "share_id": "s1",
+                "alias_email": "affection_thorn212@slmail.me",
+                "content": {
+                    "title": "affection_thorn212@slmail.me",
+                    "note": "",
+                    "content": {"Alias": {}},
+                    "extra_fields": [],
+                },
+            },
+            "attachments": [],
+        }
+    )
+    client = FakeClient(view=view)
+    clipboard = FakeClipboard()
+    app = make_app(
+        tmp_path,
+        client=client,
+        clipboard=clipboard,
+        refs=[ItemRef("s1", "i1", "affection_thorn212@slmail.me", (), "Personal", "Alias")],
+    )
+    app.start()
+    screen = app.handle_key("enter")
+    assert isinstance(screen, FieldScreen)
+    assert screen.labels == ["email: affection_thorn212@slmail.me"]
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
+    assert clipboard.written == ["affection_thorn212@slmail.me"]
 
 
 def test_verbose_log_records_decisions(tmp_path):

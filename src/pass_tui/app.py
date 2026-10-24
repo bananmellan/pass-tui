@@ -329,9 +329,11 @@ class App:
                 return screen
             copied = self._copy_label(label)
             if copied:
-                screen.message = f"Copied {copied}"
-            else:
-                screen.message = "Nothing to copy"
+                # Like rofi: copying a field ends the program. The
+                # reopen-after-copy memory is armed inside _copy_label
+                # before we quit, so the next launch reopens this item.
+                raise QuitRequested
+            screen.message = "Nothing to copy"
             return screen
         if key == "esc":
             if screen.query:

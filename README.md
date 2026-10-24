@@ -81,9 +81,18 @@ Bind `pass-tui` (or `bin/pass-tui`) to a key in your window manager or shell.
 - Type to filter items (matches on title, urls and vault name; substring first,
   then fuzzy subsequence for tokens of 3+ characters).
 - `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`) move the selection; `Enter` opens
-  the selected item's field menu.
-- In the field menu, `Enter` copies the field's value to the clipboard. `Esc`
-  goes back to the item list; `Esc` again (or with an empty query) quits.
+  the selected item's field menu. Emacs-style binds also work: `Ctrl+n`/`Ctrl+p`
+  move down/up, `Ctrl+m` (or `Ctrl+j`) is enter, `Ctrl+g` is back/quit.
+- The list renders fixed-width columns (title, type badge, url, vault), colored
+  when the terminal supports colors.
+- In the field menu, `Enter` copies the field's value to the clipboard and
+  **quits the program** (like rofi). The last-copied item's menu reopens on the
+  next launch within `PASS_TUI_REOPEN_SECONDS` (default 20 s). `Esc` goes back
+  to the item list; `Esc` again (or with an empty query) quits.
+- Every copyable field of every item type is offered: note, login
+  email/username/password, TOTP, urls, alias addresses (hide-my-email items),
+  credit-card number/PIN, identity fields, ssh keys, wifi passwords, custom
+  sections, and extra fields.
 - `Esc` in the list first clears the search query, then quits.
 - `Ctrl-r` forces a synchronous cache rebuild. `Ctrl-c` quits immediately.
 
