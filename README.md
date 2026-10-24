@@ -14,7 +14,9 @@ toolkit — just run it from a terminal.
   `CreditCard`/`Identity`/`SshKey`/`Wifi`/`Custom`, serialized externally
   tagged as `content.content = {"Login": {...}}` etc.). Typing a badge name
   (e.g. `alias`) filters to exactly that type, ranked first.
-  **Search is live**: the list filters as you type.
+  **Search is live**: the list filters as you type. Like rofi, an empty
+  prompt shows no results — items appear once at least one character is
+  in the search bar.
 - Items are listed from a local cache (`$XDG_CACHE_HOME/pass-tui/items.v1.json`)
   containing only **title, item id, share id, urls, vault name, item type and
   item uuid** — never passwords, notes or other field values. The rebuild runs
@@ -54,21 +56,24 @@ toolkit — just run it from a terminal.
 ## Requirements
 
 - Python >= 3.10 (standard library only — curses ships with CPython)
-- `pass-cli` — log in once with `pass-cli login` (web flow). To keep the
-  session across reboots on Linux, set `PROTON_PASS_LINUX_KEYRING=dbus`
-  so pass-cli stores its encryption key in the desktop Secret Service
-  (e.g. GNOME Keyring, unlocked at login) instead of the kernel keyring
-  that is wiped on every reboot. To require a PIN after inactivity,
-  create a [session
-  lock](https://protonpass.github.io/pass-cli/commands/session/):
-  `pass-cli session create-lock --idle-timeout 600` (30–900 s; 600 =
-  10 minutes). pass-tui detects a locked session and prompts for the
-  lock code. If pass-tui finds no session at all (e.g. first run on a
-  new machine), it prompts for a [personal access
+- `pass-cli` — log in once with `pass-cli login` (web flow). pass-tui
+  sets two defaults for you (both opt-out, see Configuration):
+  - it exports `PROTON_PASS_LINUX_KEYRING=dbus` for its pass-cli
+    children, so the session survives reboots on Linux (the desktop
+    Secret Service, e.g. GNOME Keyring, holds the encryption key
+    instead of the kernel keyring that is wiped on every reboot);
+  - on the first launch with an unlocked session it offers to create a
+    [session
+    lock](https://protonpass.github.io/pass-cli/commands/session/)
+    with a 10-minute idle timeout, so the session PIN-locks after 10
+    minutes idle (30–900 s). pass-tui detects a locked session and
+    prompts for the lock code.
+  If pass-tui finds no session at all (e.g. first run on a new
+  machine), it prompts for a [personal access
   token](https://protonpass.github.io/pass-cli/get-started/configuration/#personal-access-tokens)
   and logs in with it instead. Note that token sessions expire after 2
-  hours, so for daily use the one-time `pass-cli login` is the better
-  option
+  hours and cannot have a session lock, so for daily use the one-time
+  `pass-cli login` is the better option
 - `wl-copy`/`wl-paste`, `xclip` or `xsel` for clipboard integration
 - A terminal with curses support
 
@@ -90,8 +95,10 @@ Bind `pass-tui` (or `bin/pass-tui`) to a key in your window manager or shell.
 
 ## Usage
 
-- Type to filter items (matches on title, urls and vault name; substring first,
-  then fuzzy subsequence for tokens of 3+ characters).
+- The list starts empty: type to filter items (matches on title, urls
+  and vault name; substring first, then fuzzy subsequence for tokens of
+  3+ characters). Results appear as soon as the prompt has at least one
+  character.
 - `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`) move the selection; `Enter` opens
   the selected item's field menu. Emacs-style binds also work: `Ctrl+n`/`Ctrl+p`
   move down/up, `Ctrl+m` (or `Ctrl+j`) is enter, `Ctrl+l` is back/quit.
@@ -129,6 +136,8 @@ Bind `pass-tui` (or `bin/pass-tui`) to a key in your window manager or shell.
 | `PASS_TUI_REOPEN_SECONDS` | `20` | reopen last item's menu after a copy |
 | `PASS_TUI_DEBUG` | unset | set to `1` to log to `debug.log` |
 | `PASS_TUI_VERBOSE` | unset | set to `1` (or pass `--verbose`) to log decision points (clipboard content, extracted host, cache stats, match count) to stderr and `debug.log` |
+| `PASS_TUI_KEYRING_BACKEND` | `dbus` | pass-cli Linux key storage: `dbus` (Secret Service, survives reboot) or `kernel` (wiped on reboot). pass-tui exports `PROTON_PASS_LINUX_KEYRING` accordingly unless it is already set |
+| `PASS_TUI_LOCK_IDLE_TIMEOUT` | `600` | session-lock idle timeout in seconds offered at first launch (30–900); `0` disables the offer |
 
 The legacy `PASS_ROFI_*` environment variables are still honored as fallbacks,
 and an existing `$XDG_CACHE_HOME/pass-rofi` cache directory is reused if no
@@ -168,7 +177,10 @@ host, how many cached items have urls, and how many matched.
   is tampered with, API calls are rejected until the session is
   unlocked. The lock code is never stored anywhere — if you forget it,
   `pass-cli logout` and log in again. Note that PAT sessions cannot have
-  a session lock.
+  a session lock, so the first-launch lock offer is skipped for them.
+- The `PROTON_PASS_LINUX_KEYRING=dbus` default only changes where
+  pass-cli stores its local encryption key (Secret Service vs kernel
+  keyring); it does not store any credential itself.
 
 ## Development
 

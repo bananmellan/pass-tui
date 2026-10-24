@@ -85,15 +85,20 @@ def _reap(pid: int) -> None:
             time.sleep(0.05)
 
 
-def _run_pty(argv: list[str], code: str, timeout: float = 15.0) -> tuple[str, bool]:
-    """Run pass-cli under a pty and answer its lock-code prompt.
+def _run_pty(
+    argv: list[str], code: str, timeout: float = 15.0, max_answers: int = 2
+) -> tuple[str, bool]:
+    """Run pass-cli under a pty and answer its lock-code prompt(s).
 
-    `pass-cli session unlock` reads the lock code from a real terminal
-    (rpassword), so piping stdin fails with "No such device or address".
-    The pty makes pass-cli see a terminal while the code is written to
-    the pty master straight from memory — it never appears in argv,
-    never in the transcript (pass-cli disables echo for the entry) and
-    is never written to disk.
+    `pass-cli session unlock`/`create-lock` read the lock code from a
+    real terminal (rpassword), so piping stdin fails with "No such
+    device or address". The pty makes pass-cli see a terminal while the
+    code is written to the pty master straight from memory — it never
+    appears in argv, never in the transcript (pass-cli disables echo
+    for the entry) and is never written to disk.
+
+    Every "lock code" prompt in the transcript is answered with the same
+    code (create-lock asks twice: enter + confirm), up to max_answers.
 
     Returns (transcript, timed_out). The transcript is capped and never
     contains the code.
@@ -105,7 +110,7 @@ def _run_pty(argv: list[str], code: str, timeout: float = 15.0) -> tuple[str, bo
         except OSError:
             os._exit(127)
     transcript = b""
-    answered = False
+    answers = 0
     timed_out = False
     start = time.time()
     while time.time() - start < timeout:
@@ -119,12 +124,13 @@ def _run_pty(argv: list[str], code: str, timeout: float = 15.0) -> tuple[str, bo
                 break
             if len(transcript) < _PTY_TRANSCRIPT_CAP:
                 transcript += chunk[: _PTY_TRANSCRIPT_CAP - len(transcript)]
-            if not answered and b"lock code" in transcript.lower():
+            answered_prompts = transcript.lower().count(b"lock code")
+            while answers < max_answers and answers < answered_prompts:
                 try:
                     os.write(fd, (code + "\n").encode())
                 except OSError:
                     pass
-                answered = True
+                answers += 1
         if not os.path.exists(f"/proc/{pid}"):
             time.sleep(0.2)
             break
@@ -372,6 +378,52 @@ class PassCli:
             raise SessionLockedError("wrong lock code")
         last = transcript.strip().splitlines()
         raise PassCliError(last[-1] if last else "session unlock failed")
+
+    def session_has_lock(self) -> bool:
+        """True when the current session has a lock configured.
+
+        Reads `pass-cli info --output json` (session_has_lock). PAT
+        sessions can never have a lock, so this is False for them.
+        Returns False on any failure — callers treat "unknown" as
+        "don't try to create a lock".
+        """
+        try:
+            data = self._exec_json([self.binary, "info", "--output", "json"])
+        except PassCliError:
+            return False
+        if not isinstance(data, dict):
+            return False
+        value = data.get("session_has_lock", data.get("sessionHasLock"))
+        return value is True or str(value).lower() in ("yes", "true", "1")
+
+    def create_lock(self, code: str, idle_timeout: int) -> None:
+        """Create a session lock on the current session.
+
+        `pass-cli session create-lock` prompts for the lock code twice
+        (enter + confirm); both prompts are answered with the same code
+        over the pty, like unlock_session. Raises PassCliError on
+        failure (e.g. the session already has a lock, or it is a PAT
+        session, which cannot have one).
+        """
+        if not code:
+            raise PassCliError("empty lock code")
+        transcript, timed_out = self._pty_runner(
+            [
+                self.binary,
+                "session",
+                "create-lock",
+                "--idle-timeout",
+                str(idle_timeout),
+            ],
+            code,
+        )
+        if timed_out:
+            raise PassCliError("timed out waiting for pass-cli session create-lock")
+        lowered = transcript.lower()
+        if "successfully" in lowered:
+            return
+        last = transcript.strip().splitlines()
+        raise PassCliError(last[-1] if last else "session create-lock failed")
 
     def login_with_token(self, token: str) -> None:
         """Log in with a personal access token (pst_...::KEY).

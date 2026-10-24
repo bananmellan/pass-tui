@@ -183,6 +183,7 @@ class StubWindow:
 def test_draw_list_shows_items_and_prompt(tmp_path):
     app = make_app(tmp_path, refs=[ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))])
     app.start()
+    app.screen.query = "login"  # empty prompt shows no results
     win = StubWindow()
     tui._draw_list(win, app)
     text = win.text()
@@ -208,6 +209,7 @@ def test_draw_list_shows_type_badges(tmp_path):
     ]
     app = make_app(tmp_path, refs=refs)
     app.start()
+    app.screen.query = "Personal"  # empty prompt shows no results
     win = StubWindow()
     tui._draw_list(win, app)
     text = win.text()
@@ -230,6 +232,7 @@ def test_draw_fields_header_shows_type_badge(tmp_path):
     refs = [ItemRef("s1", "i1", "actress_revolving098@smail.me", (), "Personal", "Alias")]
     app = make_app(tmp_path, refs=refs)
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     win = StubWindow()
     tui._draw_fields(win, app)
@@ -262,6 +265,7 @@ def test_draw_list_shows_host_filter_and_query(tmp_path):
 def test_draw_list_marks_selected_row(tmp_path):
     app = make_app(tmp_path, refs=[ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))])
     app.start()
+    app.screen.query = "login"  # empty prompt shows no results
     app.handle_key("down")
     win = StubWindow()
     tui._draw_list(win, app)
@@ -279,6 +283,7 @@ def test_draw_list_fixed_width_columns(tmp_path):
     ]
     app = make_app(tmp_path, refs=refs)
     app.start()
+    app.screen.query = "login"  # empty prompt shows no results
     win = StubWindow()
     tui._draw_list(win, app)
     # Title-sorted: "B" is the first row, "GitHub" the second.
@@ -297,6 +302,7 @@ def test_draw_list_narrow_terminal_keeps_title_column(tmp_path):
     refs = [ref("s1", "i1", "GitHub", ("https://github.com",), "Personal")]
     app = make_app(tmp_path, refs=refs)
     app.start()
+    app.screen.query = "GitHub"
     win = StubWindow(height=10, width=30)
     tui._draw_list(win, app)
     # Nothing overflows the screen width.
@@ -333,6 +339,7 @@ def test_field_hint_truncates_and_marks_multiline():
 def test_draw_fields_two_columns_with_hints(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     win = StubWindow()
@@ -362,6 +369,7 @@ def test_draw_fields_two_columns_with_hints(tmp_path):
 def test_draw_fields_without_values_draws_two_columns(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     win = StubWindow()
     tui._draw_fields(win, app)  # no field_values: no hint column
@@ -391,6 +399,7 @@ def test_draw_fields_totp_has_no_preview(tmp_path):
 
     app = make_app(tmp_path, client=FakeClient(view=_json.dumps(view)), refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     values = app.field_values()
     assert "totp" not in values  # fetched live at copy time, never stored
@@ -409,6 +418,7 @@ def test_draw_fields_totp_has_no_preview(tmp_path):
 def test_draw_fields_shows_labels(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     win = StubWindow()
@@ -432,6 +442,7 @@ def test_draw_fields_failed_copy_message(tmp_path):
     clipboard.write = fail
     app = make_app(tmp_path, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("password")
@@ -448,6 +459,7 @@ def test_draw_list_truncates_long_lines(tmp_path):
     long_title = "A" * 200
     app = make_app(tmp_path, refs=[ref(title=long_title, urls=("https://" + "b" * 100,))])
     app.start()
+    app.screen.query = "A"
     win = StubWindow(height=24, width=40)
     tui._draw_list(win, app)
     assert len(win.row(2).rstrip()) <= 39
@@ -457,6 +469,7 @@ def test_draw_scrolls_when_selection_moves_past_view(tmp_path):
     refs = [ref("s1", f"i{n}", f"Item {n:02d}", ()) for n in range(30)]
     app = make_app(tmp_path, refs=refs)
     app.start()
+    app.screen.query = "Item"  # empty prompt shows no results
     for _ in range(25):
         app.handle_key("down")
     win = StubWindow(height=10, width=80)
@@ -470,7 +483,7 @@ def test_draw_scrolls_when_selection_moves_past_view(tmp_path):
 # ------------------------------------------------------------ pty smoke
 
 
-def _run_in_pty(tmp_path, script, refs):
+def _run_in_pty(tmp_path, script, refs, seed_query=None):
     """Run the real curses UI in a pty; `script` is a list of keystrokes
     (bytes) sent with small delays. Returns the app after the loop ends."""
     cache_dir = tmp_path / "cache"
@@ -482,6 +495,8 @@ def _run_in_pty(tmp_path, script, refs):
     env["PASS_TUI_CACHE_DIR"] = str(cache_dir)
     env["LINES"] = "24"
     env["COLUMNS"] = "80"
+    if seed_query is not None:
+        env["PASS_TUI_SEED_QUERY"] = seed_query
 
     argv = [sys.executable, "-c", _PTY_CHILD]
     master, slave = pty.openpty()
@@ -545,7 +560,14 @@ class Clip:
         Path(cache_dir / "copied.txt").write_text(value)
 
 app = App(config, cache, state, C(), Clip())
-run(app)
+if __import__("os").environ.get("PASS_TUI_SEED_QUERY"):
+    app.start()
+    app.screen.query = __import__("os").environ["PASS_TUI_SEED_QUERY"]
+    from pass_tui.tui import _loop
+    import curses
+    curses.wrapper(_loop, app)
+else:
+    run(app)
 """ % str(Path(__file__).resolve().parent.parent / "src")
 
 
@@ -555,7 +577,7 @@ def test_pty_quit_with_esc(tmp_path):
 
 
 def test_pty_open_item_and_copy(tmp_path):
-    rc = _run_in_pty(tmp_path, [b"\r", b"\x1b", b"\x1b"], [ref()])
+    rc = _run_in_pty(tmp_path, [b"\r", b"\x1b", b"\x1b"], [ref()], seed_query="GitHub")
     assert rc == 0
     # esc from fields goes back to list; second esc quits.
     assert (tmp_path / "cache").is_dir()
@@ -569,7 +591,7 @@ def test_pty_type_to_filter_then_quit(tmp_path):
 
 def test_pty_copy_quits_program(tmp_path):
     """Copying a field must end the program, like rofi."""
-    rc = _run_in_pty(tmp_path, [b"\r", b"\r"], [ref()])
+    rc = _run_in_pty(tmp_path, [b"\r", b"\r"], [ref()], seed_query="GitHub")
     assert rc == 0
     copied = (tmp_path / "cache" / "copied.txt").read_text()
     # First copyable field of the Login view is the username.
@@ -579,7 +601,7 @@ def test_pty_copy_quits_program(tmp_path):
 def test_pty_ctrl_n_moves_down(tmp_path):
     # Title-sorted: Bank (i2) first, GitHub (i1) second.
     refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
-    rc = _run_in_pty(tmp_path, [b"\x0e", b"\r", b"\x1b", b"\x1b"], refs)
+    rc = _run_in_pty(tmp_path, [b"\x0e", b"\r", b"\x1b", b"\x1b"], refs, seed_query="login")
     assert rc == 0
     opened = (tmp_path / "cache" / "opened.txt").read_text().split()
     assert opened == ["i1"]  # Ctrl+n selected GitHub
@@ -587,14 +609,14 @@ def test_pty_ctrl_n_moves_down(tmp_path):
 
 def test_pty_ctrl_p_moves_up(tmp_path):
     refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
-    rc = _run_in_pty(tmp_path, [b"\x0e", b"\x10", b"\r", b"\x1b", b"\x1b"], refs)
+    rc = _run_in_pty(tmp_path, [b"\x0e", b"\x10", b"\r", b"\x1b", b"\x1b"], refs, seed_query="login")
     assert rc == 0
     opened = (tmp_path / "cache" / "opened.txt").read_text().split()
     assert opened == ["i2"]  # Ctrl+n then Ctrl+p: back on Bank
 
 
 def test_pty_ctrl_l_goes_back_from_fields(tmp_path):
-    rc = _run_in_pty(tmp_path, [b"\r", b"\x0c", b"\x1b"], [ref()])
+    rc = _run_in_pty(tmp_path, [b"\r", b"\x0c", b"\x1b"], [ref()], seed_query="GitHub")
     assert rc == 0
     # Ctrl+l returned to the list, so no second open happened.
     opened = (tmp_path / "cache" / "opened.txt").read_text().split()

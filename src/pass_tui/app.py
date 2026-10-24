@@ -43,6 +43,13 @@ class ListScreen:
 
     @property
     def visible(self) -> list[ItemRef]:
+        # Rofi-style: an empty prompt shows no results — items appear
+        # only once at least one character is in the search bar. The
+        # full list stays in self.refs (status bar, column widths).
+        # A clipboard-prefilled host counts as characters, so host
+        # matches still show on launch.
+        if not self.query.strip():
+            return []
         # While the clipboard-prefilled host is still in the query,
         # filter precisely (substring only) so unrelated items never
         # appear; once the user edits the query past the host, normal

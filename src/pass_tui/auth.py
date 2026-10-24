@@ -25,6 +25,7 @@ import getpass
 import sys
 from typing import Callable
 
+from .config import Config
 from .passcli import (
     SESSION_LOCKED,
     SESSION_UNLOCKED,
@@ -166,3 +167,53 @@ def ensure_authenticated(
         return False
     log("logged in with personal access token")
     return True
+
+
+def setup_session_locks(
+    client: PassCli,
+    config: Config,
+    prompt_lock: Callable[[], str] = prompt_for_lock_code,
+    stream=None,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    """Best-effort session-lock setup, called once an unlocked session
+    exists. Default-on conveniences, all no-ops on failure:
+
+    - If the session has no lock yet and config.lock_idle_timeout > 0,
+      prompt for a lock code and create the lock with that idle
+      timeout. Skipped for PAT sessions (pass-cli refuses locks on
+      them) — detected via session_has_lock plus a refused create.
+    """
+    stream = stream or sys.stderr
+    log = log or (lambda msg: None)
+    if config.lock_idle_timeout <= 0:
+        return
+    if client.session_has_lock():
+        log("session lock already configured")
+        return
+    log("no session lock configured, prompting to create one")
+    print(
+        "pass-tui: protect this session with a lock code?",
+        file=stream,
+    )
+    print(
+        f"It will lock after {config.lock_idle_timeout} s idle and pass-tui will",
+        file=stream,
+    )
+    print(
+        f"ask for the code (see {_LOCK_URL}). Ctrl-c to skip.",
+        file=stream,
+    )
+    try:
+        code = prompt_lock()
+    except AuthAborted:
+        log("session lock setup skipped")
+        return
+    try:
+        client.create_lock(code, config.lock_idle_timeout)
+    except PassCliError as exc:
+        # PAT sessions and other unsupported setups refuse locks; the
+        # session still works, so this is informational only.
+        log(f"session lock setup failed (skipped): {exc}")
+        return
+    log(f"session lock created (idle timeout {config.lock_idle_timeout} s)")

@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from .app import App
-from .auth import AuthAborted, ensure_authenticated
+from .auth import AuthAborted, ensure_authenticated, setup_session_locks
 from .cache import CACHE_NAME, Cache
 from .clipboard import Clipboard
 from .config import Config
@@ -80,6 +80,14 @@ def run_tui(config: Config | None = None, env=None) -> int:
         )
         return 2
     cache_dir = Path(config.cache_dir)
+    if config.keyring_backend == "dbus" and "PROTON_PASS_LINUX_KEYRING" not in os.environ:
+        # Default: keep the session across reboots by storing pass-cli's
+        # encryption key in the desktop Secret Service instead of the
+        # kernel keyring (wiped on reboot). Applies to this process and
+        # every pass-cli child it spawns. Opt out with
+        # PASS_TUI_KEYRING_BACKEND=kernel (or set PROTON_PASS_LINUX_KEYRING
+        # yourself).
+        os.environ["PROTON_PASS_LINUX_KEYRING"] = "dbus"
     client = PassCli(config.pass_cli_bin)
     try:
         authenticated = ensure_authenticated(
@@ -91,6 +99,11 @@ def run_tui(config: Config | None = None, env=None) -> int:
         return 1
     if not authenticated:
         return 1
+    setup_session_locks(
+        client,
+        config,
+        log=lambda msg: _verbose(config, cache_dir, msg),
+    )
     from .tui import run
 
     app = build_app(config, client=client)

@@ -204,3 +204,85 @@ def test_prompt_for_lock_code_eof_aborts():
 
     with pytest.raises(AuthAborted):
         prompt_for_lock_code(stream=stream, input_fn=eof)
+
+
+# ------------------------------------------------------------ setup_session_locks
+
+from pass_tui.auth import setup_session_locks
+from pass_tui.config import Config
+
+
+class LockClient(FakeClient):
+    def __init__(self, has_lock=False, create_error=None, **kwargs):
+        super().__init__(state=UNLOCKED, **kwargs)
+        self._has_lock = has_lock
+        self._create_error = create_error
+        self.create_calls = []
+
+    def session_has_lock(self):
+        return self._has_lock
+
+    def create_lock(self, code, idle_timeout):
+        self.create_calls.append((code, idle_timeout))
+        if self._create_error is not None:
+            raise self._create_error
+
+
+def test_setup_session_locks_creates_lock_with_configured_timeout():
+    client = LockClient()
+    setup_session_locks(client, Config(lock_idle_timeout=600), prompt_lock=lambda: "1234")
+    assert client.create_calls == [("1234", 600)]
+
+
+def test_setup_session_locks_skips_when_lock_exists():
+    client = LockClient(has_lock=True)
+    called = []
+    setup_session_locks(
+        client,
+        Config(lock_idle_timeout=600),
+        prompt_lock=lambda: called.append(1) or "1234",
+    )
+    assert client.create_calls == []
+    assert called == []
+
+
+def test_setup_session_locks_disabled_when_timeout_zero():
+    client = LockClient()
+    called = []
+    setup_session_locks(
+        client,
+        Config(lock_idle_timeout=0),
+        prompt_lock=lambda: called.append(1) or "1234",
+    )
+    assert client.create_calls == []
+    assert called == []
+
+
+def test_setup_session_locks_abort_skips():
+    client = LockClient()
+
+    def abort():
+        raise AuthAborted()
+
+    setup_session_locks(client, Config(lock_idle_timeout=600), prompt_lock=abort)
+    assert client.create_calls == []
+
+
+def test_setup_session_locks_create_failure_is_not_fatal():
+    """PAT sessions cannot have a lock; pass-cli refuses. Setup must
+    swallow that and leave the session usable."""
+    client = LockClient(create_error=PassCliError("PAT sessions cannot have a lock"))
+    stream = io.StringIO()
+    setup_session_locks(
+        client, Config(lock_idle_timeout=600), prompt_lock=lambda: "1234", stream=stream
+    )
+    assert client.create_calls == [("1234", 600)]
+
+
+def test_setup_session_locks_lock_code_not_printed():
+    client = LockClient()
+    stream = io.StringIO()
+    setup_session_locks(
+        client, Config(lock_idle_timeout=600), prompt_lock=lambda: "1234", stream=stream
+    )
+    assert "1234" not in stream.getvalue()

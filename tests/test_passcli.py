@@ -726,6 +726,61 @@ def test_unlock_session_empty_code_rejected():
         client.unlock_session("")
 
 
+def test_session_has_lock_true():
+    client = make_client({("info", "--output", "json"): '{"session_has_lock": true}'})
+    assert client.session_has_lock() is True
+
+
+def test_session_has_lock_camelcase_and_yes():
+    client = make_client({("info", "--output", "json"): '{"sessionHasLock": "yes"}'})
+    assert client.session_has_lock() is True
+
+
+def test_session_has_lock_false():
+    client = make_client({("info", "--output", "json"): '{"session_has_lock": false}'})
+    assert client.session_has_lock() is False
+
+
+def test_session_has_lock_false_on_failure():
+    def runner(argv):
+        raise PassCliError("no session")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.session_has_lock() is False
+
+
+def test_create_lock_answers_both_prompts():
+    seen = []
+
+    def pty_runner(argv, code):
+        seen.append((argv, code))
+        return "Enter lock code: \nRe-enter lock code: \nSession locked successfully\n", False
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    client.create_lock("1234", 600)
+    assert seen == [(
+        ["pass-cli", "session", "create-lock", "--idle-timeout", "600"], "1234"
+    )]
+
+
+def test_create_lock_failure_raises():
+    def pty_runner(argv, code):
+        return "Enter lock code: \nError: personal access token sessions cannot have a lock\n", False
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(PassCliError, match="cannot have a lock"):
+        client.create_lock("1234", 600)
+
+
+def test_create_lock_timeout():
+    def pty_runner(argv, code):
+        return "Enter lock code: ", True
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(PassCliError, match="timed out"):
+        client.create_lock("1234", 600)
+
+
 def test_unlock_session_generic_failure_reports_last_line():
     def pty_runner(argv, code):
         return "Enter lock code: \nsome failure\nError: boom\n", False

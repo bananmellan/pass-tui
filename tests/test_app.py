@@ -98,6 +98,22 @@ def test_start_lists_cached_items_sorted(tmp_path):
     assert isinstance(screen, ListScreen)
     assert [r.title for r in screen.refs] == ["Bank", "GitHub"]
     assert screen.query == ""
+    # Rofi-style: an empty prompt shows no results.
+    assert screen.visible == []
+    # Typing one character brings results back.
+    screen = app.handle_key("g")
+    assert "GitHub" in [r.title for r in screen.visible]
+
+
+def test_empty_query_shows_nothing_even_with_cache(tmp_path):
+    app = make_app(tmp_path, refs=[ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))])
+    screen = app.start()
+    assert screen.query == ""
+    assert screen.visible == []
+    assert screen.selected_ref is None
+    # Whitespace-only counts as empty.
+    screen = app.handle_key(" ")
+    assert screen.visible == []
 
 
 def test_start_rebuilds_when_cache_missing(tmp_path):
@@ -231,6 +247,7 @@ def test_clipboard_no_match_shows_full_list(tmp_path):
     assert isinstance(screen, ListScreen)
     assert screen.query == ""
     assert [r.title for r in screen.refs] == ["GitHub"]
+    assert screen.visible == []  # empty prompt: no results shown
 
 
 def test_clipboard_non_url_ignored(tmp_path):
@@ -276,11 +293,13 @@ def test_copy_then_launch_with_url_still_matches(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")  # open GitHub
     assert isinstance(app.screen, FieldScreen)
     app.handle_key("down")  # note
     app.handle_key("down")  # password
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")  # copy password -> quit
     assert clipboard.written == ["secret"]
     # Now the clipboard holds the secret; a URL launch must still match.
@@ -295,6 +314,7 @@ def test_reopen_after_copy_is_one_shot(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     # labels: note, password, totp, url: ..., username (field_labels order)
@@ -303,6 +323,7 @@ def test_reopen_after_copy_is_one_shot(tmp_path):
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["secret"]
     assert app.state.get_last_copied() is not None
@@ -323,6 +344,7 @@ def test_reopen_after_copy_is_one_shot(tmp_path):
 def test_open_item_does_not_arm_reopen(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     assert app.state.get_last_copied() is None
@@ -332,6 +354,7 @@ def test_close_without_copy_then_relaunch_shows_list(tmp_path):
     client = FakeClient()
     app = make_app(tmp_path, client=client, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     # Quit without copying (esc from fields goes back to list; esc again quits).
@@ -353,12 +376,14 @@ def test_reopen_window_expired_shows_list(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()], now=lambda: now[0])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["secret"]
     # Move beyond the 20 s reopen window.
@@ -382,13 +407,15 @@ def test_typing_filters_list_live(tmp_path):
     screen = app.handle_key("backspace")
     screen = app.handle_key("backspace")
     screen = app.handle_key("backspace")
-    assert [r.title for r in screen.visible] == ["Bank", "GitHub", "GitLab"]
+    # Empty prompt: no results shown until at least one character.
+    assert screen.visible == []
 
 
 def test_enter_opens_selected_item(tmp_path):
     client = FakeClient()
     app = make_app(tmp_path, client=client, refs=[ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     screen = app.handle_key("enter")  # Bank is first (title-sorted)
     assert isinstance(screen, FieldScreen)
     assert client.view_calls[0].item_id == "i2"
@@ -401,6 +428,7 @@ def test_navigation_keys(tmp_path):
     )
     screen = app.start()
     assert screen.selected == 0
+    screen.query = "a"  # empty prompt shows no results; seed one
     screen = app.handle_key("down")
     assert screen.selected == 1
     screen = app.handle_key("down")
@@ -433,6 +461,7 @@ def test_esc_in_list_with_query_clears_query_then_quits(tmp_path):
 def test_esc_in_fields_returns_to_list(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     screen = app.handle_key("esc")
@@ -443,6 +472,7 @@ def test_esc_in_fields_returns_to_list(tmp_path):
 def test_fields_typing_filters_fields(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     screen = app.screen
     assert isinstance(screen, FieldScreen)
@@ -458,12 +488,14 @@ def test_field_enter_copies_value_and_quits(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["secret"]
     # The reopen-after-copy memory is armed before quitting.
@@ -482,6 +514,7 @@ def test_failed_copy_does_not_quit(tmp_path):
     clipboard.write = fail
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("password")
@@ -498,12 +531,14 @@ def test_field_enter_copies_totp(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("totp")
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["123456"]
     assert client.totp_calls
@@ -513,6 +548,7 @@ def test_field_enter_copies_url(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     url_label = next(l for l in labels if l.startswith("url: "))
@@ -520,6 +556,7 @@ def test_field_enter_copies_url(tmp_path):
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["https://github.com"]
 
@@ -527,6 +564,7 @@ def test_field_enter_copies_url(tmp_path):
 def test_field_navigation_and_filter(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     screen = app.screen
     assert isinstance(screen, FieldScreen)
@@ -570,12 +608,14 @@ def test_ctrl_c_quits_and_clears_reopen_memory(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert app.state.get_last_copied() is not None
     with pytest.raises(QuitRequested):
@@ -591,7 +631,9 @@ def test_duplicate_titles_open_exact_item(tmp_path):
         refs=[ref(), ref("s2", "i2", "GitHub", ("https://github.com/other",), "Work")],
     )
     screen = app.start()
-    # Both titled GitHub; select the second one.
+    # Both titled GitHub; select the second one. Seed a query first:
+    # an empty prompt shows no results.
+    screen.query = "GitHub"
     screen = app.handle_key("down")
     assert screen.selected_ref.item_id == "i2"
     screen = app.handle_key("enter")
@@ -609,6 +651,7 @@ def test_view_failure_returns_to_list_with_message(tmp_path):
     client.view_item_with_retry = boom
     app = make_app(tmp_path, client=client, refs=[ref()])
     screen = app.start()
+    app.screen.query = app.screen.refs[0].title
     screen = app.handle_key("enter")
     assert isinstance(screen, ListScreen)
     assert "Could not open" in screen.message
@@ -634,12 +677,14 @@ def test_item_with_only_extra_fields_opens(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref(title="Mors enheter")])
     screen = app.start()
+    app.screen.query = app.screen.refs[0].title
     screen = app.handle_key("enter")
     assert isinstance(screen, FieldScreen)
     assert "field: iPhone PIN" in screen.labels
     assert "field: MacBook" in screen.labels
     # Copy the first extra field; copying quits.
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["1234"]
 
@@ -649,6 +694,7 @@ def test_no_readable_fields_returns_to_list(tmp_path):
     client = FakeClient(view=view)
     app = make_app(tmp_path, client=client, refs=[ref(title="Empty")])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     screen = app.handle_key("enter")
     assert isinstance(screen, ListScreen)
     assert "No readable fields" in screen.message
@@ -683,10 +729,12 @@ def test_alias_item_opens_with_readable_email_field(tmp_path):
         refs=[ItemRef("s1", "i1", "affection_thorn212@slmail.me", (), "Personal", "Alias")],
     )
     app.start()
+    app.screen.query = app.screen.refs[0].title
     screen = app.handle_key("enter")
     assert isinstance(screen, FieldScreen)
     assert screen.labels == ["email: affection_thorn212@slmail.me"]
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["affection_thorn212@slmail.me"]
 
@@ -722,6 +770,7 @@ def test_field_previews_censor_hidden_fields(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=FakeClient(view=view), clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     previews = app.field_values()
@@ -743,6 +792,7 @@ def test_field_previews_censor_hidden_fields(tmp_path):
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["s3cret"]
 
