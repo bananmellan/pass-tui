@@ -809,3 +809,71 @@ def test_login_with_token_propagates_failure():
     client = PassCli("pass-cli", runner=runner)
     with pytest.raises(PassCliError):
         client.login_with_token("pst_bad")
+
+
+def test_parse_items_captures_safe_fields_and_never_secrets():
+    """--show-secrets listing: non-sensitive values are captured at
+    rebuild time; secret values are never stored on the ItemRef."""
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "vault_id": "v1",
+                "state": "Active",
+                "content": {
+                    "title": "GitHub",
+                    "note": "work account",
+                    "content": {
+                        "Login": {
+                            "email": "",
+                            "username": "me",
+                            "password": "secret",
+                            "urls": ["https://github.com"],
+                            "totp_uri": "otpauth://totp/x",
+                            "passkeys": [],
+                            "autofill_urls": [],
+                        }
+                    },
+                    "extra_fields": [
+                        {"name": "API key", "content": {"Hidden": "hunter2"}},
+                        {"name": "Recovery", "content": {"Text": "abc"}},
+                    ],
+                },
+            }
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert len(items) == 1
+    safe = dict(items[0].safe_fields)
+    assert safe["note"] == "work account"
+    assert safe["username"] == "me"
+    assert safe["url: https://github.com"] == "https://github.com"
+    assert safe["field: Recovery"] == "abc"
+    # Hidden labels kept, values dropped.
+    assert safe["password"] == ""
+    assert safe["field: API key"] == ""
+    assert safe["totp"] == ""
+    blob = json.dumps(items[0].to_dict())
+    assert "secret" not in blob
+    assert "hunter2" not in blob
+    assert "otpauth://totp/x" not in blob
+
+
+def test_parse_items_without_show_secrets_has_empty_safe_fields():
+    """ItemSummary listings (no content) carry no cached fields; the
+    app falls back to a live view when the item is opened."""
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "vault_id": "v1",
+                "state": "Active",
+                "title": "GitHub",
+                "item_type": "login",
+            }
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert items[0].safe_fields == ()

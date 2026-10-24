@@ -17,15 +17,28 @@ toolkit — just run it from a terminal.
   **Search is live**: the list filters as you type. Like rofi, an empty
   prompt shows no results — items appear once at least one character is
   in the search bar.
-- Items are listed from a local cache (`$XDG_CACHE_HOME/pass-tui/items.v1.json`)
-  containing only **title, item id, share id, urls, vault name, item type and
-  item uuid** — never passwords, notes or other field values. The rebuild runs
+- Items are listed from a local cache (`$XDG_CACHE_HOME/pass-tui/items.v2.json`)
+  containing **title, item id, share id, urls, vault name, item type, item
+  uuid** and the **non-sensitive field values** (usernames, emails, notes,
+  urls, Text/Timestamp extra fields, identity details, ...). The rebuild runs
   `pass-cli item list --show-secrets` (required: without it pass-cli emits
-  title/id summaries with no urls) but parses the JSON in-process and keeps
-  only the non-sensitive fields listed above; secrets are never written to disk.
+  title/id summaries with no urls) and parses the JSON in-process. **Secret
+  values are never written to disk**: hidden fields (passwords, PINs, card
+  numbers, ...) are cached as label-only entries (name kept, value dropped),
+  so the field menu can list them censored but copying one always fetches the
+  value live from pass-cli.
 - Startup is fast: the list renders straight from the cache; when the cache is
   older than `PASS_TUI_CACHE_TTL` seconds (default 600) a background rebuild is
   spawned without blocking the UI.
+- Navigation is snappy: opening an item and copying a non-sensitive field are
+  served entirely from the cache — no pass-cli call. Only copying a sensitive
+  field (password, PIN, TOTP, ...) triggers a live `pass-cli item view` /
+  `totp` call.
+- Loading feedback: while any slow operation runs (initial cache refresh,
+  `Ctrl-r` refresh, opening an item without cached fields, fetching a
+  sensitive field, generating a TOTP code) the header shows what is happening
+  ("Reloading items…", "Loading <title>…", "Fetching <field>…",
+  "Generating TOTP code…").
 - Vault listing is parallelized across vaults (thread pool), so even large
   accounts rebuild quickly.
 - If the clipboard contains an `http(s)://` URL or a bare hostname (`wl-paste`,
@@ -38,10 +51,11 @@ toolkit — just run it from a terminal.
   then subdomain, then host-contains; ties break toward titles that name the
   host (including camelCase initials, so "NextCloud" ranks for `nc.honung.org`),
   then items with fewer unrelated urls.
-- Selecting an item fetches its secrets on demand (`pass-cli item view`) and
-  shows a field menu; selecting a field copies its value to the clipboard.
-  TOTP codes are generated via `pass://<share>/<item>/totp`. Field values are
-  never printed to the screen — only copied.
+- Selecting an item shows a field menu (instantly, from the cache);
+  selecting a field copies its value to the clipboard. Sensitive fields are
+  fetched on demand (`pass-cli item view`) at copy time; TOTP codes are
+  generated via `pass://<share>/<item>/totp`. Field values are never printed
+  to the screen — only copied.
 - After **copying** a field, relaunching within `PASS_TUI_REOPEN_SECONDS`
   (default 20) reopens the same item's field menu — once. The reopen memory is
   cleared on every program start, so if you close without copying and relaunch,
@@ -150,14 +164,17 @@ host, how many cached items have urls, and how many matched.
 
 ## Security model
 
-- The cache stores only non-sensitive metadata (titles, ids, urls, vault
-  names, item type/uuid). Items are resolved by their exact `share_id` +
-  `item_id`, so duplicate titles can never open the wrong item.
-- Secrets are fetched only when an item is opened or a field is copied, passed
-  through pipes, and written straight to the clipboard — never written to disk
-  by this tool and never printed to the screen. The field view censors hidden
-  fields (passwords, PINs, card numbers, private keys, SSN/passport/license
-  numbers, TOTP, and `Hidden`/`Totp` extra fields) behind a fixed-length mask.
+- The cache stores only non-sensitive data: metadata (titles, ids, urls, vault
+  names, item type/uuid) plus non-sensitive field values (usernames, emails,
+  notes, urls, Text/Timestamp extra fields). Items are resolved by their exact
+  `share_id` + `item_id`, so duplicate titles can never open the wrong item.
+- Secrets are never cached and never written to disk. Hidden field *names*
+  are cached (so the menu can list them), but their *values* are dropped and
+  fetched live from pass-cli only when copied, passed through pipes, and
+  written straight to the clipboard — never printed to the screen. The field
+  view censors hidden fields (passwords, PINs, card numbers, private keys,
+  SSN/passport/license numbers, TOTP, and `Hidden`/`Totp` extra fields)
+  behind a fixed-length mask.
 - Cache and state files are written atomically with `0600` permissions.
 - Field values are never logged; debug logging records only titles, ids and
   error messages.
@@ -200,10 +217,12 @@ src/pass_tui/
   search.py              live filtering (token substring/subsequence ranking)
   types.py               item-type normalization and list badges
   passcli.py             pass-cli subprocess wrapper + JSON parsing
-  cache.py               metadata cache (atomic, 0600, TTL, background refresh)
+  cache.py               item cache (atomic, 0600, TTL, background refresh;
+                         stores metadata + non-sensitive field values only)
   state.py               last-copied / open-item state (one-shot reopen)
   clipboard.py           wl-clipboard/xclip/xsel abstraction, URL host extraction
-  fields.py              item-view JSON -> field labels and values
+  fields.py              item-view JSON -> field labels and values;
+                         safe-field capture + cache-view reconstruction
   config.py              environment-based configuration
   models.py              Vault / ItemRef dataclasses
   dedup.py               item dedup by item_uuid / item_id

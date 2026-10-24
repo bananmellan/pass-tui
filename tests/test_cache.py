@@ -92,12 +92,25 @@ def test_dedup_refs_dedups_same_id_with_different_titles(tmp_path):
     assert [r.title for r in dedup_refs(refs)] == ["GitHub"]
 
 
-def test_load_cache_dedups_stale_file(tmp_path):
-    """A cache file written by an older version with duplicate entries is
-    deduped on load so the list never shows the same item twice."""
+def test_load_cache_rejects_v1_file(tmp_path):
+    """A cache file written by an older version is not read; the TTL
+    refresh rebuilds it."""
     path = tmp_path / CACHE_NAME
     payload = {
         "version": 1,
+        "created_at": 0,
+        "items": [ref("s1", "i1", "GitHub", ("https://github.com",)).to_dict()],
+    }
+    path.write_text(json.dumps(payload))
+    assert load_cache(path) == []
+
+
+def test_load_cache_dedups_stale_file(tmp_path):
+    """A cache file with duplicate entries is
+    deduped on load so the list never shows the same item twice."""
+    path = tmp_path / CACHE_NAME
+    payload = {
+        "version": 2,
         "created_at": 0,
         "items": [
             ref("s1", "i1", "GitHub", ("https://github.com",)).to_dict(),
@@ -162,7 +175,7 @@ def test_load_cache_dedups_by_item_uuid(tmp_path):
     (pass-cli handed out a new item_id for the same item) collapse to one."""
     path = tmp_path / CACHE_NAME
     payload = {
-        "version": 1,
+        "version": 2,
         "created_at": 0,
         "items": [
             {
@@ -205,7 +218,7 @@ def test_cache_allows_item_uuid_key(tmp_path):
     path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "items": [
                     {
                         "share_id": "s1",
@@ -230,7 +243,7 @@ def test_load_rejects_foreign_keys(tmp_path):
     path.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "items": [
                     {
                         "share_id": "s1",
@@ -417,3 +430,51 @@ def test_match_host_deterministic_order():
     first = match_host(refs, "github.com")
     second = match_host(list(reversed(refs)), "github.com")
     assert [r.title for r in first] == [r.title for r in second] == ["Alpha", "Beta"]
+
+
+def test_cache_roundtrip_preserves_safe_fields(tmp_path):
+    """Non-sensitive field values survive dump+load so the app can
+    open items without a pass-cli call; hidden labels survive with
+    empty values (secrets are never cached)."""
+    path = tmp_path / CACHE_NAME
+    rich = ItemRef(
+        "s1", "i1", "GitHub",
+        ("https://github.com",), "Personal", "Login",
+        safe_fields=(("username", "me"), ("note", "work"), ("password", ""), ("totp", "")),
+    )
+    dump_cache([rich], path)
+    loaded = load_cache(path)
+    assert len(loaded) == 1
+    assert dict(loaded[0].safe_fields) == {
+        "username": "me",
+        "note": "work",
+        "password": "",
+        "totp": "",
+    }
+    # Secrets are never written to the cache file.
+    blob = path.read_text()
+    assert "secret" not in blob
+
+
+def test_load_cache_tolerates_entry_without_safe_fields(tmp_path):
+    """Entries written without safe_fields (hand-rolled/old shape
+    inside the current version) load with empty safe_fields."""
+    path = tmp_path / CACHE_NAME
+    payload = {
+        "version": 2,
+        "created_at": 0,
+        "items": [
+            {
+                "share_id": "s1",
+                "item_id": "i1",
+                "title": "GitHub",
+                "urls": ["https://github.com"],
+                "vault_name": "Personal",
+                "item_type": "Login",
+                "item_uuid": "",
+            }
+        ],
+    }
+    path.write_text(json.dumps(payload))
+    loaded = load_cache(path)
+    assert loaded[0].safe_fields == ()

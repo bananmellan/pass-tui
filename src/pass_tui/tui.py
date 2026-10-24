@@ -211,6 +211,9 @@ def _draw_list(stdscr, app: App) -> None:
         status = f"{screen.message}  \u2014  {status}"
     status += "  \u00b7  enter: open  esc/ctrl-l: back/quit  ctrl-r: refresh"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
+    if app.busy:
+        _put(stdscr, 0, max(0, width - len(app.busy) - 1), app.busy,
+             curses.A_BOLD | _pair(_PAIR_PROMPT))
     stdscr.move(1, min(2 + len(screen.query), width - 1))
     stdscr.refresh()
 
@@ -331,25 +334,45 @@ def _draw_fields(stdscr, app: App, field_values: dict[str, str] | None = None) -
         status = f"{screen.message}  \u2014  {status}"
     status += "  \u00b7  enter: copy  esc/ctrl-l: back"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
+    if app.busy:
+        _put(stdscr, 0, max(0, width - len(app.busy) - 1), app.busy,
+             curses.A_BOLD | _pair(_PAIR_PROMPT))
     stdscr.move(1, min(2 + len(screen.query), width - 1))
     stdscr.refresh()
 
 
 def run(app: App) -> None:
-    """Run the curses event loop until the user quits."""
-    app.start()
+    """Run the curses event loop until the user quits.
+
+    The UI is brought up before the initial load so a slow cache
+    rebuild shows a loading indicator instead of an empty screen.
+    """
     curses.wrapper(_loop, app)
+
+
+def _draw(stdscr, app: App) -> None:
+    if isinstance(app.screen, FieldScreen):
+        _draw_fields(stdscr, app, app.field_values())
+    else:
+        _draw_list(stdscr, app)
+
+
+# Keys that may trigger a slow pass-cli call; while one runs, the busy
+# indicator is shown immediately (before the handler returns).
+_BUSY_PREVIEW = {
+    "ctrl_r": "Reloading items\u2026",
+    "enter": "Loading\u2026",
+}
 
 
 def _loop(stdscr, app: App) -> None:
     curses.curs_set(1)
     stdscr.keypad(True)
     _init_colors()
+    if not app._started:
+        app.start()
     while True:
-        if isinstance(app.screen, FieldScreen):
-            _draw_fields(stdscr, app, app.field_values())
-        else:
-            _draw_list(stdscr, app)
+        _draw(stdscr, app)
         try:
             ch = stdscr.getch()
         except KeyboardInterrupt:
@@ -357,6 +380,11 @@ def _loop(stdscr, app: App) -> None:
         name = _key_name(ch)
         if not name:
             continue
+        # If this key may block, show the indicator before handling
+        # it so the user gets feedback during the wait.
+        if name in _BUSY_PREVIEW and not app.busy:
+            app.busy = _BUSY_PREVIEW[name]
+            _draw(stdscr, app)
         try:
             app.handle_key(name)
         except QuitRequested:

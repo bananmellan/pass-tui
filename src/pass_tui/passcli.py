@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Iterable
 
 from .dedup import dedup_refs
+from .fields import safe_fields_from_view
 from .models import ItemRef, Vault
 
 
@@ -273,6 +274,15 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
         if item_id in seen:
             continue
         seen.add(item_id)
+        # With --show-secrets the listing carries the full item content,
+        # so the non-sensitive copyable fields are captured here, once,
+        # at rebuild time. Secret values are dropped (never cached);
+        # they are fetched live when a sensitive field is copied.
+        # safe_fields_from_view expects the item-view shape
+        # ({"item": {...}}); the listing entry is promoted into it.
+        view_shape = dict(raw)
+        view_shape["item"] = raw
+        safe = safe_fields_from_view(view_shape)
         items.append(
             ItemRef(
                 share_id=share_id,
@@ -282,6 +292,7 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
                 vault_name=vault_name or "",
                 item_type=item_type,
                 item_uuid=item_uuid,
+                safe_fields=tuple(safe.items()),
             )
         )
     return items

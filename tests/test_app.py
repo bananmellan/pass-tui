@@ -66,6 +66,11 @@ class FakeClient:
         self.view_calls.append(item_ref)
         return json.loads(self.view)
 
+    def view_item(self, item_ref):
+        # Live fetch used when copying a sensitive field.
+        self.view_calls.append(item_ref)
+        return json.loads(self.view)
+
     def totp(self, item_ref):
         self.totp_calls.append(item_ref)
         return self.totp_value
@@ -821,3 +826,201 @@ def test_verbose_log_records_decisions(tmp_path):
     assert any("clipboard read" in m for m in messages)
     assert any("extracted host: 'github.com'" in m for m in messages)
     assert any("matched 1 items" in m for m in messages)
+
+
+# ------------------------------------------------- cached fields / busy
+
+from pass_tui.fields import HIDDEN_PREVIEW
+
+SAFE_REF = ItemRef(
+    "s1", "i1", "GitHub",
+    ("https://github.com",), "Personal", "Login",
+    safe_fields=(
+        ("note", "work account"),
+        ("username", "me"),
+        ("password", ""),
+        ("totp", ""),
+        ("url: https://github.com", "https://github.com"),
+    ),
+)
+
+
+def test_open_item_with_cached_fields_skips_passcli(tmp_path):
+    """An item whose fields were captured at rebuild time opens
+    instantly: no view_item/view_item_with_retry call."""
+    client = FakeClient()
+    app = make_app(tmp_path, client=client, refs=[SAFE_REF])
+    screen = app.start()
+    app.screen.query = "GitHub"
+    screen = app.handle_key("enter")
+    assert isinstance(screen, FieldScreen)
+    assert client.view_calls == []
+    assert app.busy == ""
+    # Menu shows the same labels as a live view would.
+    assert "note" in screen.labels
+    assert "username" in screen.labels
+    assert "password" in screen.labels
+    assert "totp" in screen.labels
+    # Previews: safe values shown, secrets censored.
+    previews = app.field_values()
+    assert previews["username"] == "me"
+    assert previews["note"] == "work account"
+    assert previews["password"] == HIDDEN_PREVIEW
+    assert "totp" not in previews
+
+
+def test_copy_safe_field_uses_cache_without_passcli(tmp_path):
+    """Copying a non-sensitive field is served from the cache."""
+    client = FakeClient()
+    clipboard = FakeClipboard()
+    app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[SAFE_REF])
+    app.start()
+    app.screen.query = "GitHub"
+    app.handle_key("enter")
+    screen = app.screen
+    labels = screen.labels
+    idx = labels.index("username")
+    for _ in range(idx):
+        app.handle_key("down")
+    with pytest.raises(QuitRequested):
+        app.screen.query = ""
+        app.handle_key("enter")
+    assert clipboard.written == ["me"]
+    assert client.view_calls == []
+    assert app.busy == ""
+
+
+def test_copy_sensitive_field_fetches_live(tmp_path):
+    """Copying a hidden field fetches the value live from pass-cli;
+    the cached ref never carried the secret."""
+    client = FakeClient()
+    clipboard = FakeClipboard()
+    app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[SAFE_REF])
+    app.start()
+    app.screen.query = "GitHub"
+    app.handle_key("enter")
+    labels = app.screen.labels
+    idx = labels.index("password")
+    for _ in range(idx):
+        app.handle_key("down")
+    with pytest.raises(QuitRequested):
+        app.screen.query = ""
+        app.handle_key("enter")
+    assert clipboard.written == ["secret"]
+    # Exactly one live fetch for the sensitive copy.
+    assert len(client.view_calls) == 1
+    assert client.view_calls[0].item_id == "i1"
+    assert app.busy == ""
+
+
+def test_copy_totp_calls_client_totp(tmp_path):
+    client = FakeClient(totp="654321")
+    clipboard = FakeClipboard()
+    app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[SAFE_REF])
+    app.start()
+    app.screen.query = "GitHub"
+    app.handle_key("enter")
+    labels = app.screen.labels
+    idx = labels.index("totp")
+    for _ in range(idx):
+        app.handle_key("down")
+    with pytest.raises(QuitRequested):
+        app.screen.query = ""
+        app.handle_key("enter")
+    assert clipboard.written == ["654321"]
+    assert len(client.totp_calls) == 1
+    assert client.view_calls == []
+    assert app.busy == ""
+
+
+def test_open_item_without_cached_fields_falls_back_to_live(tmp_path):
+    """Refs written before safe-field caching (empty safe_fields)
+    still open via a live pass-cli view, with a busy indicator."""
+    client = FakeClient()
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    screen = app.start()
+    app.screen.query = "GitHub"
+    busy_seen = []
+    orig = app._set_busy
+
+    def spy(what):
+        busy_seen.append(what)
+        orig(what)
+
+    app._set_busy = spy
+    screen = app.handle_key("enter")
+    assert isinstance(screen, FieldScreen)
+    assert len(client.view_calls) == 1
+    assert any("Loading" in b for b in busy_seen)
+    assert app.busy == ""
+
+
+def test_busy_set_and_cleared_around_rebuild(tmp_path):
+    client = FakeClient(items=([ref()], 1))
+    app = make_app(tmp_path, client=client, refs=None)
+    busy_seen = []
+    orig = app._set_busy
+
+    def spy(what):
+        busy_seen.append(what)
+        orig(what)
+
+    app._set_busy = spy
+    app.start()
+    assert any("Reloading" in b for b in busy_seen)
+    assert app.busy == ""
+
+
+def test_busy_set_and_cleared_around_ctrl_r(tmp_path):
+    client = FakeClient(items=([ref()], 1))
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    app.start()
+    busy_seen = []
+    orig = app._set_busy
+
+    def spy(what):
+        busy_seen.append(what)
+        orig(what)
+
+    app._set_busy = spy
+    app.handle_key("ctrl_r")
+    assert any("Reloading" in b for b in busy_seen)
+    assert app.busy == ""
+
+
+def test_busy_cleared_when_open_fails(tmp_path):
+    client = FakeClient()
+
+    def boom(item_ref):
+        raise PassCliError("gone")
+
+    client.view_item_with_retry = boom
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    screen = app.start()
+    app.screen.query = "GitHub"
+    screen = app.handle_key("enter")
+    assert isinstance(screen, ListScreen)
+    assert app.busy == ""
+
+
+def test_busy_cleared_when_sensitive_copy_fails(tmp_path):
+    client = FakeClient()
+
+    def boom(item_ref):
+        raise PassCliError("gone")
+
+    client.view_item = boom
+    clipboard = FakeClipboard()
+    app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[SAFE_REF])
+    app.start()
+    app.screen.query = "GitHub"
+    app.handle_key("enter")
+    labels = app.screen.labels
+    idx = labels.index("password")
+    for _ in range(idx):
+        app.handle_key("down")
+    screen = app.handle_key("enter")  # copy fails, no quit
+    assert isinstance(screen, FieldScreen)
+    assert screen.message == "Nothing to copy"
+    assert clipboard.written == []
+    assert app.busy == ""

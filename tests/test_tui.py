@@ -71,6 +71,10 @@ class FakeClient:
         self.view_calls.append(item_ref)
         return json.loads(self.view)
 
+    def view_item(self, item_ref):
+        self.view_calls.append(item_ref)
+        return json.loads(self.view)
+
     def totp(self, item_ref):
         return "123456"
 
@@ -667,3 +671,42 @@ def test_pty_ctrl_c_quits(tmp_path):
 
 
 import subprocess  # noqa: E402  (used by _run_in_pty)
+
+
+def test_draw_list_shows_busy_indicator_top_right(tmp_path):
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.busy = "Reloading items\u2026"
+    win = StubWindow()
+    tui._draw_list(win, app)
+    header = win.row(0)
+    assert "Reloading items" in header
+    # Right-aligned near the edge.
+    assert header.rstrip().endswith("items\u2026")
+
+
+def test_draw_list_hides_busy_indicator_when_idle(tmp_path):
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.busy = ""
+    win = StubWindow()
+    tui._draw_list(win, app)
+    assert "Reloading" not in win.row(0)
+    assert "Loading" not in win.row(0)
+
+
+def test_draw_fields_shows_busy_indicator(tmp_path):
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    app.busy = "Fetching password\u2026"
+    win = StubWindow()
+    tui._draw_fields(win, app, app.field_values())
+    assert "Fetching password" in win.row(0)
+
+
+def test_busy_preview_table_covers_slow_keys():
+    assert tui._BUSY_PREVIEW["ctrl_r"].startswith("Reloading")
+    assert tui._BUSY_PREVIEW["enter"].startswith("Loading")

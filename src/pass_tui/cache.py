@@ -12,10 +12,19 @@ from .dedup import dedup_refs
 from .models import ItemRef
 from .passcli import PassCli, PassCliError
 
-CACHE_VERSION = 1
-CACHE_NAME = "items.v1.json"
+CACHE_VERSION = 2
+CACHE_NAME = "items.v2.json"
 
-_ALLOWED_KEYS = {"share_id", "item_id", "title", "urls", "vault_name", "item_type", "item_uuid"}
+_ALLOWED_KEYS = {
+    "share_id",
+    "item_id",
+    "title",
+    "urls",
+    "vault_name",
+    "item_type",
+    "item_uuid",
+    "safe_fields",
+}
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -42,7 +51,12 @@ def load_cache(path: Path) -> list[ItemRef]:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return []
-    if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
+    if not isinstance(data, dict):
+        return []
+    version = data.get("version")
+    if version != CACHE_VERSION:
+        # Unknown/newer version: never read it (forward compatibility).
+        # Older versions are not migrated — the TTL refresh rebuilds.
         return []
     items = data.get("items")
     if not isinstance(items, list):
