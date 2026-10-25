@@ -319,6 +319,41 @@ def test_truncate():
     assert tui._truncate("hello", 0) == ""
 
 
+def test_put_centered():
+    """_put_centered centers text and returns the start x."""
+
+    class FakeWin:
+        def __init__(self, width):
+            self._width = width
+            self.cells = {}
+
+        def getmaxyx(self):
+            return (24, self._width)
+
+        def addnstr(self, y, x, text, n, attr=0):
+            for i, ch in enumerate(text[:n]):
+                self.cells[(y, x + i)] = ch
+
+    # Width 80, text "> ab" (4 chars): avail=79, x=(79-4)//2=37
+    win = FakeWin(80)
+    x = tui._put_centered(win, 1, "> ab", 0)
+    assert x == 37
+    assert win.cells[(1, 37)] == ">"
+    assert win.cells[(1, 40)] == "b"
+
+    # Text wider than screen: left-aligned, truncated.
+    win = FakeWin(10)
+    x = tui._put_centered(win, 1, "a" * 20, 0)
+    assert x == 0
+    assert win.cells[(1, 0)] == "a"
+    assert win.cells[(1, 8)] == "…"
+
+    # Exact fit: starts at 0.
+    win = FakeWin(5)
+    x = tui._put_centered(win, 1, "abcd", 0)
+    assert x == 0
+
+
 # ------------------------------------------------------------ rendering
 
 
@@ -387,13 +422,76 @@ def test_draw_list_shows_items_and_prompt(tmp_path):
     tui._draw_list(win, app)
     text = win.text()
     assert "Proton Pass" in text
-    assert win.row(1).startswith(">")
+    assert "> login" in win.row(1)
     assert "GitHub" in text
     assert "Bank" in text
     assert "https://github.com" in text
     assert "[Personal]" in text
     assert "2/2 items" in text
     assert win.refreshed == 1
+
+
+def test_draw_list_centers_prompt(tmp_path):
+    """The search prompt is centered on row 1."""
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.screen.query = "login"
+    win = StubWindow(height=24, width=80)
+    tui._draw_list(win, app)
+    full_row = win.row(1)
+    prompt = "> login"
+    # The prompt text appears centered: leading and trailing whitespace
+    # differ by at most one column (the centering formula leaves the extra
+    # column on the right).
+    idx = full_row.index(prompt)
+    leading = idx
+    trailing = len(full_row) - (idx + len(prompt))
+    assert trailing - leading in (0, 1)
+    # Cursor sits right after the query text.
+    assert win.cursor == (1, idx + len(prompt))
+
+
+def test_draw_list_centers_prompt_as_query_grows(tmp_path):
+    """The prompt stays centered as the query grows: each keystroke
+    shifts the start position left by roughly half a column."""
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    win = StubWindow(height=24, width=80)
+    positions = []
+    for ch in "git":
+        app.screen.query += ch
+        tui._draw_list(win, app)
+        full_row = win.row(1)
+        prompt = f"> {app.screen.query}"
+        idx = full_row.index(prompt)
+        positions.append(idx)
+    # Non-increasing: the prompt moves left (or stays) as it grows.
+    assert positions[0] >= positions[1] >= positions[2]
+    # And the centering stays balanced throughout (within 2 columns,
+    # accounting for the StubWindow's full-width padding).
+    for ch_count, idx in enumerate(positions, start=1):
+        prompt_len = 2 + ch_count  # "> " + query
+        leading = idx
+        trailing = 80 - (idx + prompt_len)
+        assert abs(trailing - leading) <= 2
+
+
+def test_draw_fields_centers_prompt(tmp_path):
+    """The field-view prompt is also centered."""
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    app.screen.query = "pass"
+    win = StubWindow(height=24, width=80)
+    tui._draw_fields(win, app, app.field_values())
+    full_row = win.row(1)
+    prompt = "> pass"
+    idx = full_row.index(prompt)
+    leading = idx
+    trailing = len(full_row) - (idx + len(prompt))
+    # Centered within 2 columns (StubWindow pads to full width).
+    assert abs(trailing - leading) <= 2
 
 
 def test_draw_list_shows_type_badges(tmp_path):

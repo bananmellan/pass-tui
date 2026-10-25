@@ -265,6 +265,22 @@ def _put(stdscr, y: int, x: int, text: str, attr: int) -> None:
     stdscr.addnstr(y, x, text, max(0, min(len(text), width - 1 - x)), attr)
 
 
+def _put_centered(stdscr, y: int, text: str, attr: int) -> int:
+    """Write text centered on row y. Returns the x where the text starts.
+
+    When the text is wider than the screen it is truncated and starts at
+    column 0 (left-aligned fallback).
+    """
+    _height, width = stdscr.getmaxyx()
+    avail = width - 1
+    if len(text) >= avail:
+        _put(stdscr, y, 0, _truncate(text, avail), attr)
+        return 0
+    x = (avail - len(text)) // 2
+    _put(stdscr, y, x, text, attr)
+    return x
+
+
 def _list_columns(refs: list, width: int) -> tuple[int, int, int, int]:
     """Fixed column widths for the list: (title, badge, url, vault).
 
@@ -309,7 +325,7 @@ def _draw_list(stdscr, app: App) -> None:
     _put(stdscr, 0, 0, _truncate(header, width - 1), curses.A_BOLD)
 
     prompt = f"> {screen.query}"
-    _put(stdscr, 1, 0, _truncate(prompt, width - 1), _pair(_PAIR_PROMPT))
+    prompt_x = _put_centered(stdscr, 1, prompt, _pair(_PAIR_PROMPT))
 
     visible = screen.visible
     title_w, badge_w, url_w, vault_w = _list_columns(visible, width)
@@ -357,7 +373,7 @@ def _draw_list(stdscr, app: App) -> None:
     if app.busy:
         _put(stdscr, 0, max(0, width - len(app.busy) - 1), app.busy,
              curses.A_BOLD | _pair(_PAIR_PROMPT))
-    stdscr.move(1, min(2 + len(screen.query), width - 1))
+    stdscr.move(1, min(prompt_x + 2 + len(screen.query), width - 1))
     stdscr.refresh()
 
 
@@ -440,7 +456,7 @@ def _draw_fields(stdscr, app: App, field_values: dict[str, str] | None = None) -
     _put(stdscr, 0, 0, _truncate(title, width - 1), curses.A_BOLD | _pair(_PAIR_TITLE))
 
     prompt = f"> {screen.query}"
-    _put(stdscr, 1, 0, _truncate(prompt, width - 1), _pair(_PAIR_PROMPT))
+    prompt_x = _put_centered(stdscr, 1, prompt, _pair(_PAIR_PROMPT))
 
     visible = screen.visible
     kind_w, value_w = _field_columns(visible, width)
@@ -480,7 +496,7 @@ def _draw_fields(stdscr, app: App, field_values: dict[str, str] | None = None) -
     if app.busy:
         _put(stdscr, 0, max(0, width - len(app.busy) - 1), app.busy,
              curses.A_BOLD | _pair(_PAIR_PROMPT))
-    stdscr.move(1, min(2 + len(screen.query), width - 1))
+    stdscr.move(1, min(prompt_x + 2 + len(screen.query), width - 1))
     stdscr.refresh()
 
 
