@@ -129,6 +129,189 @@ def test_key_name_printable():
     assert tui._key_name(0) == ""
 
 
+def test_key_name_wide_chars():
+    """_key_name passes through decoded multi-byte characters unchanged."""
+    assert tui._key_name("å") == "å"
+    assert tui._key_name("ä") == "ä"
+    assert tui._key_name("ö") == "ö"
+    assert tui._key_name("é") == "é"
+    assert tui._key_name("€") == "€"
+    assert tui._key_name("😀") == "😀"
+
+
+def test_key_name_csi_named_keys():
+    """_key_name passes through symbolic names from CSI sequence parsing."""
+    assert tui._key_name("up") == "up"
+    assert tui._key_name("down") == "down"
+    assert tui._key_name("pageup") == "pageup"
+
+
+def test_csi_keys_table():
+    """The manual CSI sequence table covers the common arrow/navigation keys."""
+    assert tui._CSI_KEYS["\x1b[A"] == "up"
+    assert tui._CSI_KEYS["\x1b[B"] == "down"
+    assert tui._CSI_KEYS["\x1b[H"] == "home"
+    assert tui._CSI_KEYS["\x1b[F"] == "end"
+    assert tui._CSI_KEYS["\x1b[5~"] == "pageup"
+    assert tui._CSI_KEYS["\x1b[6~"] == "pagedown"
+
+
+def test_read_utf8_char_decodes_multibyte():
+    """_read_utf8_char reassembles a multi-byte UTF-8 sequence from
+    the lead byte plus continuation bytes read via getch()."""
+
+    class FakeWin:
+        def __init__(self, bytes_):
+            self._bytes = list(bytes_)
+            self.nodelay_calls = []
+
+        def getch(self):
+            if self._bytes:
+                return self._bytes.pop(0)
+            return -1
+
+        def nodelay(self, flag):
+            self.nodelay_calls.append(flag)
+
+    # å = U+00E5 = 0xC3 0xA5 in UTF-8
+    win = FakeWin([0xA5])
+    assert tui._read_utf8_char(win, 0xC3) == "å"
+    # 😀 = U+1F600 = 0xF0 0x9F 0x98 0x80
+    win = FakeWin([0x9F, 0x98, 0x80])
+    assert tui._read_utf8_char(win, 0xF0) == "😀"
+    # Invalid sequence: lead byte with no continuation
+    win = FakeWin([])
+    assert tui._read_utf8_char(win, 0xC3) == chr(0xC3)
+
+
+def test_read_escape_sequence_lone_esc():
+    """A lone ESC (no continuation bytes) yields an empty rest."""
+
+    class FakeWin:
+        def getch(self):
+            return -1
+
+        def nodelay(self, flag):
+            pass
+
+    esc = tui._read_escape_sequence(FakeWin(), 27)
+    assert esc.rest == b""
+
+
+def test_read_escape_sequence_csi():
+    """ESC [ A reads as rest=b'[A'."""
+
+    class FakeWin:
+        def __init__(self, bytes_):
+            self._bytes = list(bytes_)
+
+        def getch(self):
+            if self._bytes:
+                return self._bytes.pop(0)
+            return -1
+
+        def nodelay(self, flag):
+            pass
+
+    esc = tui._read_escape_sequence(FakeWin([ord("["), ord("A")]), 27)
+    assert esc.rest == b"[A"
+
+
+def test_read_escape_sequence_double_esc():
+    """ESC ESC: the second ESC stops the sequence; rest starts with ESC."""
+
+    class FakeWin:
+        def __init__(self, bytes_):
+            self._bytes = list(bytes_)
+
+        def getch(self):
+            if self._bytes:
+                return self._bytes.pop(0)
+            return -1
+
+        def nodelay(self, flag):
+            pass
+
+    esc = tui._read_escape_sequence(FakeWin([27]), 27)
+    assert esc.rest == b"\x1b"
+
+
+def test_read_key_decodes_wide_char():
+    """read_key decodes a multi-byte UTF-8 char from getch bytes."""
+
+    class FakeWin:
+        def __init__(self, bytes_):
+            self._bytes = list(bytes_)
+
+        def getch(self):
+            if self._bytes:
+                return self._bytes.pop(0)
+            return -1
+
+        def nodelay(self, flag):
+            pass
+
+    # å = 0xC3 0xA5
+    win = FakeWin([0xC3, 0xA5])
+    assert tui.read_key(win) == "å"
+
+
+def test_read_key_lone_esc():
+    """read_key returns 27 for a lone ESC."""
+
+    class FakeWin:
+        def getch(self):
+            return 27  # only ESC, then -1 from nodelay peek
+
+        def nodelay(self, flag):
+            pass
+
+    # First getch returns 27, then nodelay peeks return -1
+    keys = [27]
+
+    class FakeWin2:
+        def getch(self):
+            if keys:
+                return keys.pop(0)
+            return -1
+
+        def nodelay(self, flag):
+            pass
+
+    assert tui.read_key(FakeWin2()) == 27
+
+
+def test_read_key_csi_arrow():
+    """read_key returns 'up' for ESC [ A."""
+
+    class FakeWin:
+        def __init__(self):
+            self._bytes = [27, ord("["), ord("A")]
+
+        def getch(self):
+            if self._bytes:
+                return self._bytes.pop(0)
+            return -1
+
+        def nodelay(self, flag):
+            pass
+
+    assert tui.read_key(FakeWin()) == "up"
+
+
+def test_read_key_timeout():
+    """read_key returns None on timeout."""
+
+    class FakeWin:
+        def getch(self):
+            return -1
+
+        def nodelay(self, flag):
+            pass
+
+    assert tui.read_key(FakeWin()) is None
+
+
 def test_truncate():
     assert tui._truncate("hello", 10) == "hello"
     assert tui._truncate("hello world", 8) == "hello w…"
@@ -166,6 +349,9 @@ class StubWindow:
 
     def getch(self):
         return -1  # curses ERR
+
+    def nodelay(self, flag):
+        pass  # accepted for read_key compatibility
 
     def keypad(self, flag):
         pass
@@ -538,6 +724,8 @@ def _run_in_pty(tmp_path, script, refs, seed_query=None):
 _PTY_CHILD = r"""
 import sys
 sys.path.insert(0, %r)
+import locale
+locale.setlocale(locale.LC_ALL, "")
 from pass_tui.app import App
 from pass_tui.cache import Cache, CACHE_NAME
 from pass_tui.clipboard import Clipboard
@@ -601,6 +789,62 @@ def test_pty_type_to_filter_then_quit(tmp_path):
     refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
     rc = _run_in_pty(tmp_path, [b"bank", b"\x1b", b"\x1b"], refs)
     assert rc == 0
+
+
+def test_pty_special_chars_in_search(tmp_path):
+    """Special characters (å, ä, ö) typed into the search bar must be
+    accepted and appear in the query — they are not dropped or garbled."""
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",)),
+        ref("s1", "i2", "Åhlens", ("https://ahlens.se",)),
+        ref("s1", "i3", "Bär", ("https://bar.example.com",)),
+    ]
+    # Type "å" (UTF-8: 0xC3 0xA5), then quit with two escs.
+    rc = _run_in_pty(tmp_path, ["å".encode("utf-8"), b"\x1b", b"\x1b"], refs)
+    assert rc == 0
+
+
+def test_pty_special_chars_filter_matches(tmp_path):
+    """Typing a special character that matches an item's title must
+    filter the list — proving the character reached the search query."""
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",)),
+        ref("s1", "i2", "Åhlens", ("https://ahlens.se",)),
+    ]
+    # Type "åh" — should match "Åhlens". Then enter to open it,
+    # then esc back, esc to clear query, esc to quit.
+    script = [
+        "å".encode("utf-8"),
+        b"h",
+        b"\r",   # open the matched item
+        b"\x1b",  # back to list (query restored)
+        b"\x1b",  # clear query
+        b"\x1b",  # quit
+    ]
+    rc = _run_in_pty(tmp_path, script, refs)
+    assert rc == 0
+    opened = (tmp_path / "cache" / "opened.txt").read_text().split()
+    assert opened == ["i2"]  # Åhlens was matched and opened
+
+
+def test_pty_csi_arrow_keys(tmp_path):
+    """CSI-mode arrow keys (ESC [ A / ESC [ B) must navigate the list
+    even when terminfo only defines SS3-mode sequences."""
+    refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))]
+    # Title-sorted: Bank (i2) first, GitHub (i1) second.
+    # CSI down (ESC [ B) moves to GitHub, enter opens it.
+    # Then esc back, esc clear, esc quit.
+    script = [
+        b"\x1b[B",  # CSI down -> select GitHub
+        b"\r",      # open
+        b"\x1b",    # back to list
+        b"\x1b",    # clear query
+        b"\x1b",    # quit
+    ]
+    rc = _run_in_pty(tmp_path, script, refs, seed_query="login")
+    assert rc == 0
+    opened = (tmp_path / "cache" / "opened.txt").read_text().split()
+    assert opened == ["i1"]  # GitHub was selected and opened
 
 
 def test_pty_copy_quits_program(tmp_path):
@@ -752,23 +996,29 @@ class _InstantEnterApp:
 
 
 def _run_loop_with_keys(stdscr, app, keys):
-    """Drive _loop with scripted getch keys; returns when a key raises
-    QuitRequested or the script is exhausted."""
-    import itertools
+    """Drive _loop with scripted keys; returns when a key raises
+    QuitRequested or the script is exhausted.
 
+    `keys` is a list of values as returned by read_key(): ints for
+    bytes/function keys, strings for decoded characters or named keys.
+    """
     it = iter(keys)
 
-    def fake_getch():
+    def fake_read_key(_stdscr):
         try:
             return next(it)
         except StopIteration:
             raise tui.QuitRequested
 
-    stdscr.getch = fake_getch
+    stdscr.read_key = fake_read_key
+    orig_read_key = tui.read_key
+    tui.read_key = fake_read_key
     try:
         tui._loop(stdscr, app)
     except tui.QuitRequested:
         pass  # script exhausted: the loop exits via QuitRequested
+    finally:
+        tui.read_key = orig_read_key
 
 
 class _FakeCurses:

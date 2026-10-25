@@ -65,7 +65,150 @@ def _pair(n: int) -> int:
     return curses.color_pair(n) if _COLORS_READY else 0
 
 
-def _key_name(ch: int) -> str:
+# CSI/SS3 escape sequences that terminfo for common terminals (xterm,
+# tmux, screen, …) only defines in SS3 form (ESC O A) while the terminal
+# actually sends the CSI form (ESC [ A). We parse these manually because
+# keypad() translation via getch() only recognises the terminfo sequences.
+_CSI_KEYS = {
+    "\x1b[A": "up",
+    "\x1b[B": "down",
+    "\x1b[C": "right",
+    "\x1b[D": "left",
+    "\x1b[H": "home",
+    "\x1b[F": "end",
+    "\x1b[1~": "home",
+    "\x1b[4~": "end",
+    "\x1b[5~": "pageup",
+    "\x1b[6~": "pagedown",
+    "\x1b[3~": "delete",
+    "\x1b[Z": "backtab",
+    "\x1bOH": "home",
+    "\x1bOF": "end",
+}
+
+# Characters that terminate a CSI escape sequence.
+_CSI_FINAL = "ABCDEFGHF~JKPST"
+# Characters that terminate an SS3 escape sequence (ESC + one char).
+_SS3_FINAL = "ABCDHFOPQRS"
+
+
+class _EscapeSequence:
+    """Result of reading an ESC-prefixed input sequence.
+
+    `rest` holds the continuation bytes read after the initial ESC:
+    empty for a lone ESC, the remaining bytes of a CSI/SS3 sequence,
+    or a leading ESC byte when two ESCs arrived back-to-back (the
+    caller should treat the first as lone ESC and re-process the
+    second on the next read_key() call).
+    """
+
+    __slots__ = ("rest",)
+
+    def __init__(self, rest: bytes):
+        self.rest = rest
+
+
+def _read_escape_sequence(stdscr, first: int) -> _EscapeSequence:
+    """Read the rest of an escape sequence after the initial ESC byte.
+
+    Uses nodelay so a lone ESC returns promptly.
+    """
+    stdscr.nodelay(True)
+    seq = bytearray()
+    try:
+        while len(seq) < 7:  # up to 7 continuation bytes after ESC
+            b = stdscr.getch()
+            if b == -1 or b >= 256:
+                break
+            seq.append(b)
+            if len(seq) >= 2 and chr(seq[-1]) in _CSI_FINAL:
+                break
+            if len(seq) == 1 and chr(seq[0]) in _SS3_FINAL:
+                break
+            if b == 27:
+                # Another ESC: stop here so the caller can re-process it.
+                break
+    finally:
+        stdscr.nodelay(False)
+    return _EscapeSequence(bytes(seq))
+
+
+def _read_utf8_char(stdscr, first: int) -> str:
+    """Read the remaining bytes of a multi-byte UTF-8 character.
+
+    `first` is the lead byte already consumed by getch(). Returns the
+    decoded character, or chr(first) on failure.
+    """
+    if first >= 0xF0:
+        need = 3
+    elif first >= 0xE0:
+        need = 2
+    elif first >= 0xC0:
+        need = 1
+    else:
+        return chr(first)
+    raw = bytearray([first])
+    stdscr.nodelay(True)
+    try:
+        for _ in range(need):
+            b = stdscr.getch()
+            if b == -1 or b >= 256:
+                break
+            raw.append(b)
+    finally:
+        stdscr.nodelay(False)
+    try:
+        return bytes(raw).decode("utf-8")
+    except UnicodeDecodeError:
+        return chr(first)
+
+
+def read_key(stdscr) -> int | str | None:
+    """Read one logical key from the terminal.
+
+    Returns:
+    - ``int >= 256``: a function key code (arrows, page up/down, …)
+      translated by curses keypad() from the terminfo database.
+    - ``int 0–255``: a single ASCII byte (printable char, control
+      char, backspace, …).
+    - ``str``: either a decoded multi-byte character (e.g. "å") or a
+      symbolic name ("up", "down", …) parsed from a CSI escape
+      sequence that terminfo did not cover.
+    - ``None``: no input within the timeout.
+
+    The hybrid approach keeps keypad() translation for SS3 sequences
+    (which terminfo defines for xterm/tmux/screen) while manually
+    decoding UTF-8 multi-byte characters and CSI escape sequences
+    (which terminfo may not define for the active TERM).
+    """
+    ch = stdscr.getch()
+    if ch == -1:
+        return None
+    if ch >= 256:
+        return ch
+    if ch == 27:
+        esc = _read_escape_sequence(stdscr, ch)
+        if not esc.rest:
+            return 27  # lone ESC
+        if esc.rest[0] == 27:
+            # Two ESCs back-to-back: this one is lone ESC, push the
+            # second back so the next read_key() picks it up.
+            curses.ungetch(27)
+            return 27
+        text = ("\x1b" + esc.rest.decode("latin-1"))
+        if text in _CSI_KEYS:
+            return _CSI_KEYS[text]
+        return 27  # unrecognised sequence: treat as ESC
+    if ch >= 128:
+        return _read_utf8_char(stdscr, ch)
+    return ch
+
+
+def _key_name(ch: int | str) -> str:
+    if isinstance(ch, str):
+        # Already a symbolic name (from CSI sequence parsing) or a
+        # decoded multi-byte character.
+        return ch
     if ch == curses.KEY_UP:
         return "up"
     if ch == curses.KEY_DOWN:
@@ -382,12 +525,14 @@ def _loop(stdscr, app: App) -> None:
         _draw(stdscr, app)
         stdscr.timeout(100)
         try:
-            ch = stdscr.getch()
+            key = read_key(stdscr)
         except KeyboardInterrupt:
             return
         finally:
             stdscr.timeout(-1)
-        name = _key_name(ch)
+        if key is None:
+            continue
+        name = _key_name(key)
         if not name:
             continue
         # If this key may block, show the indicator before handling it
@@ -451,20 +596,29 @@ class Splash:
         self._redraw()
         while True:
             try:
-                ch = self._stdscr.getch()
+                key = read_key(self._stdscr)
             except KeyboardInterrupt:
                 raise AuthAborted() from None
-            if ch == 27 or ch == 3:  # Esc / Ctrl-c
+            if key is None:
+                continue
+            if isinstance(key, str):
+                # Decoded multi-byte character or named key from a CSI
+                # sequence. Named keys (arrows etc.) are not useful in a
+                # hidden prompt; treat printable chars as input.
+                if len(key) == 1 and key.isprintable():
+                    self._input += key
+                continue
+            if key == 27 or key == 3:  # Esc / Ctrl-c
                 curses.curs_set(0)
                 raise AuthAborted() from None
-            if ch in (10, 13, curses.KEY_ENTER):
+            if key in (10, 13, curses.KEY_ENTER):
                 curses.curs_set(0)
                 return self._input
-            if ch in (curses.KEY_BACKSPACE, 127, 8):
+            if key in (curses.KEY_BACKSPACE, 127, 8):
                 self._input = self._input[:-1]
                 continue
-            if 32 <= ch < 127:
-                self._input += chr(ch)
+            if 32 <= key < 127:
+                self._input += chr(key)
 
     def _redraw(self) -> None:
         stdscr = self._stdscr

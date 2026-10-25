@@ -72,6 +72,14 @@ def build_app(
 
 def run_tui(config: Config | None = None, env=None) -> int:
     config = config or Config.from_env(env or os.environ)
+    # Enable UTF-8 input/output in curses so special characters (å, ä, ö,
+    # emoji, …) are decoded correctly. Must run before curses.wrapper().
+    import locale
+
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print(
             "pass-tui: interactive terminal required (run it from a terminal)",

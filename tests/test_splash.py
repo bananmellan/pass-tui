@@ -60,6 +60,9 @@ class StubWindow:
     def timeout(self, ms):
         self.timeout_value = ms
 
+    def nodelay(self, flag):
+        pass  # accepted for read_key compatibility
+
     def getch(self):
         if self._keys:
             return self._keys.pop(0)
