@@ -72,20 +72,51 @@ def build_app(
 
 def run_tui(config: Config | None = None, env=None) -> int:
     config = config or Config.from_env(env or os.environ)
+    # Enable UTF-8 input/output in curses so special characters (å, ä, ö,
+    # emoji, …) are decoded correctly. Must run before curses.wrapper().
+    import locale
+
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print(
             "pass-tui: interactive terminal required (run it from a terminal)",
             file=sys.stderr,
         )
         return 2
-    from .tui import run
+    cache_dir = Path(config.cache_dir)
+    if config.keyring_backend == "dbus" and "PROTON_PASS_LINUX_KEYRING" not in os.environ:
+        # Default: keep the session across reboots by storing pass-cli's
+        # encryption key in the desktop Secret Service instead of the
+        # kernel keyring (wiped on reboot). Applies to this process and
+        # every pass-cli child it spawns. Opt out with
+        # PASS_TUI_KEYRING_BACKEND=kernel (or set PROTON_PASS_LINUX_KEYRING
+        # yourself).
+        os.environ["PROTON_PASS_LINUX_KEYRING"] = "dbus"
+    client = PassCli(config.pass_cli_bin)
 
-    app = build_app(config)
+    def boot(stdscr):
+        # One curses session for splash + main loop: wrapper tears the
+        # terminal down on return, so the list UI must live inside it.
+        from .tui import _loop, run_splash
+
+        ok, app = run_splash(stdscr, config, client)
+        if not ok or app is None:
+            return 1
+        _loop(stdscr, app)  # app is already started; _loop skips start()
+        return 0
+
+    import curses
+
     try:
-        run(app)
+        rc = curses.wrapper(boot)
     except KeyboardInterrupt:
-        pass
-    return 0
+        return 0
+    if rc:
+        print("pass-tui: aborted.", file=sys.stderr)
+    return rc
 
 
 def run_rebuild(config: Config | None = None, env=None) -> int:

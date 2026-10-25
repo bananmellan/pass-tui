@@ -12,10 +12,19 @@ from .dedup import dedup_refs
 from .models import ItemRef
 from .passcli import PassCli, PassCliError
 
-CACHE_VERSION = 1
-CACHE_NAME = "items.v1.json"
+CACHE_VERSION = 2
+CACHE_NAME = "items.v2.json"
 
-_ALLOWED_KEYS = {"share_id", "item_id", "title", "urls", "vault_name", "item_type", "item_uuid"}
+_ALLOWED_KEYS = {
+    "share_id",
+    "item_id",
+    "title",
+    "urls",
+    "vault_name",
+    "item_type",
+    "item_uuid",
+    "safe_fields",
+}
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -42,7 +51,12 @@ def load_cache(path: Path) -> list[ItemRef]:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return []
-    if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
+    if not isinstance(data, dict):
+        return []
+    version = data.get("version")
+    if version != CACHE_VERSION:
+        # Unknown/newer version: never read it (forward compatibility).
+        # Older versions are not migrated — the TTL refresh rebuilds.
         return []
     items = data.get("items")
     if not isinstance(items, list):
@@ -200,6 +214,15 @@ class Cache:
 
     def load(self) -> list[ItemRef]:
         return load_cache(self.path)
+
+    def is_stale(self) -> bool:
+        """True when the cache file is older than the TTL (or missing).
+
+        Used by the launch flow to decide whether the UI can render
+        from cache immediately and refresh in the background.
+        """
+        age = cache_age(self.path)
+        return age is None or age > self.ttl
 
     def rebuild(self) -> tuple[list[ItemRef], int]:
         """Rebuild the cache. Returns (items, raw_count) where raw_count is

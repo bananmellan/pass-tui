@@ -707,3 +707,127 @@ def test_hidden_preview_is_fixed_length():
     """The mask never leaks the secret's length."""
     assert HIDDEN_PREVIEW == "••••••"
     assert len(HIDDEN_PREVIEW) == 6
+
+
+# ------------------------------------------------------- safe-field cache
+
+
+def test_safe_fields_from_view_drops_secrets_keeps_labels():
+    from pass_tui.fields import safe_fields_from_view
+
+    safe = safe_fields_from_view(VIEW)
+    assert safe["note"] == "work account"
+    assert safe["username"] == "me"
+    assert safe["url: https://github.com"] == "https://github.com"
+    assert safe["url: https://gist.github.com"] == "https://gist.github.com"
+    assert safe["field: PIN"] == "0000"  # Text content is not secret
+    # Hidden values are replaced with "" but the labels stay.
+    assert safe["password"] == ""
+    assert safe["field: API key"] == ""
+    assert safe["totp"] == ""
+    blob = json.dumps(safe)
+    assert "secret" not in blob
+    assert "sk-123" not in blob
+
+
+def test_cached_view_from_ref_returns_none_without_fields():
+    from pass_tui.fields import cached_view_from_ref
+    from pass_tui.models import ItemRef
+
+    ref = ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login")
+    assert cached_view_from_ref(ref) is None
+
+
+def test_cached_view_roundtrip_login():
+    """Labels, hidden sets and safe values survive the cache roundtrip."""
+    from pass_tui.fields import cached_view_from_ref, safe_fields_from_view
+    from pass_tui.models import ItemRef
+
+    safe = safe_fields_from_view(VIEW)
+    ref = ItemRef(
+        "s1", "i1", "GitHub",
+        ("https://github.com", "https://gist.github.com"), "Personal", "Login",
+        safe_fields=tuple(safe.items()),
+    )
+    restored = cached_view_from_ref(ref)
+    assert restored is not None
+    assert field_labels(restored) == field_labels(VIEW)
+    assert hidden_field_labels(restored) == hidden_field_labels(VIEW)
+    for label in field_labels(VIEW):
+        if label in hidden_field_labels(VIEW) or label == "totp":
+            continue
+        assert field_value(restored, label) == field_value(VIEW, label)
+    # Secrets never appear in the restored view.
+    blob = json.dumps(restored)
+    assert "secret" not in blob
+    assert "sk-123" not in blob
+    assert "otpauth://totp/x" not in blob
+
+
+def test_cached_view_roundtrip_identity_grouped_sections():
+    """Grouped "<group>: <name>" labels (safe and hidden) survive."""
+    from pass_tui.fields import cached_view_from_ref, safe_fields_from_view
+    from pass_tui.models import ItemRef
+
+    view = {
+        "item": {
+            "content": {
+                "title": "John Doe",
+                "content": {
+                    "Identity": {
+                        "first_name": "John",
+                        "last_name": "Doe",
+                        "email": "john@example.com",
+                        "extra_sections": [
+                            {
+                                "section_name": "Private",
+                                "section_fields": [
+                                    {"name": "SSN", "content": {"Text": "111-22-3333"}},
+                                    {"name": "PIN", "content": {"Hidden": "1234"}},
+                                ],
+                            }
+                        ],
+                    }
+                },
+                "extra_fields": [],
+            }
+        }
+    }
+    safe = safe_fields_from_view(view)
+    assert safe["Private: SSN"] == "111-22-3333"
+    assert safe["Private: PIN"] == ""
+    ref = ItemRef(
+        "s1", "i9", "John Doe", (), "Personal", "Identity",
+        safe_fields=tuple(safe.items()),
+    )
+    restored = cached_view_from_ref(ref)
+    assert field_labels(restored) == field_labels(view)
+    assert hidden_field_labels(restored) == hidden_field_labels(view)
+    assert field_value(restored, "Private: SSN") == "111-22-3333"
+    assert "1234" not in json.dumps(restored)
+
+
+def test_cached_view_roundtrip_alias():
+    """The alias address label survives the cache roundtrip."""
+    from pass_tui.fields import cached_view_from_ref, safe_fields_from_view
+    from pass_tui.models import ItemRef
+
+    view = {
+        "item": {
+            "content": {
+                "title": "me+shopping@proton.me",
+                "item_uuid": "uuid-1",
+                "content": {"Alias": {"mailbox_ids": ["mb1"], "custom_fields": [], "note": ""}},
+                "extra_fields": [],
+            }
+        }
+    }
+    safe = safe_fields_from_view(view)
+    ref = ItemRef(
+        "s1", "i10", "me+shopping@proton.me", (), "Personal", "Alias",
+        item_uuid="uuid-1",
+        safe_fields=tuple(safe.items()),
+    )
+    restored = cached_view_from_ref(ref)
+    assert field_labels(restored) == field_labels(view)
+    assert field_value(restored, "email: me+shopping@proton.me") == "me+shopping@proton.me"

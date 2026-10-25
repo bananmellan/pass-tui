@@ -195,7 +195,10 @@ def _extra_field_value(field: dict) -> str:
     value = field.get("content")
     if isinstance(value, dict):
         for key in ("Hidden", "Text", "Totp", "value"):
-            if value.get(key):
+            # An explicitly-present empty string is a real value (a
+            # hidden-field placeholder restored from the cache); only
+            # a missing key means "no payload".
+            if key in value:
                 return str(value[key])
         # Timestamp(i64) serializes as a bare integer.
         for key in ("Timestamp", "timestamp"):
@@ -286,12 +289,24 @@ def _autofill_urls(section: dict) -> list[str]:
 
 
 def _section_fields(section: dict) -> list[tuple[str, str]]:
-    """(key, value) pairs of copyable string fields in a section."""
+    """(key, value) pairs of copyable string fields in a section.
+
+    A field with an empty-string value is included only when it is a
+    hidden (secret) key — that is a cache-restored placeholder whose
+    real value is always fetched live. Non-hidden empty fields carry
+    no payload and are skipped.
+    """
     out = []
     for key, value in section.items():
         if key in _META_KEYS or key in _ALIAS_META_KEYS or key in _SKIP_SECTION_KEYS:
             continue
-        if isinstance(value, str) and value:
+        if not isinstance(value, str):
+            continue
+        if value:
+            out.append((key, value))
+        elif _section_field_is_hidden(key) and section.get("_cached_placeholder"):
+            # Cache-restored hidden placeholder (empty value, marker
+            # set by cached_view_from_ref).
             out.append((key, value))
     return out
 
@@ -329,7 +344,10 @@ def _custom_sections(section: dict, key: str = "sections") -> list[tuple[str, st
             if not isinstance(field, dict) or not field.get("name"):
                 continue
             value = _extra_field_value(field)
-            if not value:
+            # Hidden fields stay in the menu (censored) even when the
+            # value is empty — a cache-restored placeholder carries an
+            # explicitly-present empty Hidden payload.
+            if not value and not _extra_field_is_hidden(field):
                 continue
             label = f"{section_name}: {field['name']}" if section_name else str(field["name"])
             out.append((label, value, _extra_field_is_hidden(field)))
@@ -403,7 +421,9 @@ def _label_value_pairs(data: dict) -> list[tuple[str, str, bool]]:
     for field in _extra_fields(data):
         if isinstance(field, dict) and field.get("name"):
             value = _extra_field_value(field)
-            if value:
+            # A hidden field with an empty value is a cache-restored
+            # placeholder: it still counts as a (censored) field.
+            if value or _extra_field_is_hidden(field):
                 pairs.append((f"field: {field['name']}", value, _extra_field_is_hidden(field)))
 
     pairs.extend(_android_apps(data, content))
@@ -442,3 +462,103 @@ def field_value(data: dict, label: str, totp: str = "") -> str:
         if known == label:
             return value
     return ""
+
+
+def safe_fields_from_view(data: dict) -> dict[str, str]:
+    """Fields of an item view that are safe to cache, label -> value.
+
+    Non-hidden fields are included verbatim (usernames, emails, urls,
+    notes, Text/Timestamp extra fields, identity details, ...). Hidden
+    fields are included as (label, "") — the field *name* is kept so
+    the menu can list it (censored), but the secret *value* is dropped
+    and always fetched live from pass-cli at copy time. The ``totp``
+    label is kept as ("totp", "") for the same reason: codes are
+    generated live.
+    """
+    out: dict[str, str] = {}
+    for label, value, hidden in _label_value_pairs(data):
+        if hidden:
+            out[label] = ""
+        elif label != "totp" and value:
+            out[label] = value
+        else:
+            out[label] = ""
+    return out
+
+
+def cached_view_from_ref(ref) -> dict | None:
+    """Reconstruct a minimal item-view dict from an ItemRef's cached
+    fields, or None when the ref carries none.
+
+    Safe fields are restored with their real values (instant previews
+    and copies). Hidden fields are restored as placeholders with empty
+    values and their Hidden/Totp content kind, so the field menu lists
+    them censored and copying detects them as sensitive (live fetch).
+    The exact section structure of the original view is not preserved
+    — field_labels/field_value/hidden_field_labels only care about
+    labels, and the reconstruction reproduces them exactly.
+    """
+    if not ref.safe_fields:
+        return None
+    content: dict[str, Any] = {"title": ref.title}
+    section: dict[str, Any] = {}
+    extra_fields: list[dict] = []
+    urls: list[str] = []
+    note = ""
+    has_totp = False
+    for label, value in ref.safe_fields:
+        if label == "note":
+            note = value
+            continue
+        if label.startswith("url: "):
+            urls.append(label[len("url: "):])
+            continue
+        if label == "totp":
+            has_totp = True
+            continue
+        if label.startswith("field: "):
+            name = label[len("field: "):]
+            kind = "Hidden" if not value else "Text"
+            extra_fields.append({"name": name, "content": {kind: value}})
+            continue
+        if ": " in label:
+            # "<group>: <name>" identity/custom/section field. The
+            # group prefix is part of the copyable name; hidden group
+            # fields keep an empty value so they stay censored.
+            group, _, name = label.partition(": ")
+            kind = "Hidden" if not value else "Text"
+            extra_fields.append({"name": name, "content": {kind: value}, "_group": group})
+            continue
+        if not value:
+            # A typed-section field captured by name only: it is a
+            # secret (e.g. password). Restore it under its original
+            # key with the placeholder marker so the menu lists it
+            # (censored) and copying detects it as sensitive.
+            section[label] = ""
+            section["_cached_placeholder"] = True
+            continue
+        section[label] = value
+    if note:
+        content["note"] = note
+    if urls:
+        section["urls"] = urls
+    if has_totp:
+        section["totp_uri"] = "otpauth://totp/cached"
+    # Split grouped extra fields back out of the flat extra_fields
+    # list into their section groups so labels regenerate as
+    # "<group>: <name>".
+    flat_extra: list[dict] = []
+    grouped: dict[str, list[dict]] = {}
+    for field in extra_fields:
+        group = field.pop("_group", None)
+        if group is None:
+            flat_extra.append(field)
+        else:
+            grouped.setdefault(group, []).append(field)
+    content["content"] = {ref.item_type or "Custom": section}
+    content["extra_fields"] = flat_extra
+    for group, fields in grouped.items():
+        section.setdefault("extra_sections", []).append(
+            {"section_name": group, "section_fields": fields}
+        )
+    return {"item": {"content": content}}

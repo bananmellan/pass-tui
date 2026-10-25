@@ -1,0 +1,233 @@
+"""Authentication gate for pass-tui.
+
+Before the TUI starts, pass-cli must have a usable session. The gate
+distinguishes three states:
+
+- unlocked: the session answers API calls; pass-tui starts immediately.
+- locked: a session exists but is protected by a pass-cli session lock
+  (see https://protonpass.github.io/pass-cli/commands/session/). The
+  user is prompted for the lock code (echo disabled) and pass-tui
+  unlocks the session. This is the "type a PIN" flow.
+- logged out: no session. The user is prompted for a Proton Pass
+  personal access token
+  (https://protonpass.github.io/pass-cli/get-started/configuration/#personal-access-tokens)
+  and pass-cli is logged in with it.
+
+Secrets (lock code, access token) are read with echo disabled and
+handed to pass-cli over a pipe/pty from memory. They are never printed,
+logged, passed via argv, or written to disk. Only the pass/fail outcome
+is ever reported.
+"""
+
+from __future__ import annotations
+
+import getpass
+import sys
+from typing import Callable
+
+from .config import Config
+from .passcli import (
+    SESSION_LOCKED,
+    SESSION_UNLOCKED,
+    PassCli,
+    PassCliError,
+    SessionLockedError,
+)
+
+_TOKEN_URL = (
+    "https://protonpass.github.io/pass-cli/get-started/configuration/"
+    "#personal-access-tokens"
+)
+_LOCK_URL = "https://protonpass.github.io/pass-cli/commands/session/"
+
+
+class AuthAborted(Exception):
+    """The user aborted a prompt (Esc/Ctrl-c/EOF)."""
+
+
+def _say(stream, text: str) -> None:
+    """Emit a gate message.
+
+    *stream* is either a file-like object (headless: tests, non-TUI
+    runs) or a callable (the splash UI, which renders the message as
+    its status line).
+    """
+    if callable(stream):
+        stream(text)
+    else:
+        print(text, file=stream)
+
+
+
+def prompt_for_token(
+    stream=None,
+    input_fn: Callable[[str], str] = getpass.getpass,
+) -> str:
+    """Prompt for a personal access token, hidden (no echo).
+
+    Returns the entered token. Raises AuthAborted when the user aborts
+    (empty input is treated as "try again"; Ctrl-c/EOF abort).
+    """
+    stream = stream or sys.stderr
+    while True:
+        print(
+            "pass-tui: pass-cli is not logged in.",
+            file=stream,
+        )
+        print(
+            "Run 'pass-cli login' to log in with your Proton account, or enter a",
+            file=stream,
+        )
+        print(
+            f"personal access token (created at {_TOKEN_URL}); note that",
+            file=stream,
+        )
+        print(
+            "token sessions expire after 2 hours and will ask again.",
+            file=stream,
+        )
+        try:
+            token = input_fn("Personal access token (pst_...::key, input hidden): ")
+        except (EOFError, KeyboardInterrupt):
+            raise AuthAborted() from None
+        token = token.strip()
+        if token:
+            return token
+        print("pass-tui: empty token, try again (Ctrl-c to abort).", file=stream)
+
+
+def prompt_for_lock_code(
+    stream=None,
+    input_fn: Callable[[str], str] = getpass.getpass,
+) -> str:
+    """Prompt for the pass-cli session lock code, hidden (no echo).
+
+    Returns the entered code. Raises AuthAborted when the user aborts
+    (Ctrl-c/EOF); empty input re-prompts.
+    """
+    stream = stream or sys.stderr
+    while True:
+        print(
+            "pass-tui: the pass-cli session is locked.",
+            file=stream,
+        )
+        try:
+            code = input_fn("Lock code (input hidden): ")
+        except (EOFError, KeyboardInterrupt):
+            raise AuthAborted() from None
+        code = code.strip()
+        if code:
+            return code
+        print("pass-tui: empty code, try again (Ctrl-c to abort).", file=stream)
+
+
+def ensure_authenticated(
+    client: PassCli,
+    prompt_token: Callable[[], str] = prompt_for_token,
+    prompt_lock: Callable[[], str] = prompt_for_lock_code,
+    stream=None,
+    log: Callable[[str], None] | None = None,
+    state: str | None = None,
+) -> bool:
+    """Make sure pass-cli has a usable (unlocked) session.
+
+    Returns True when pass-tui may start. Returns False when a login or
+    unlock attempt failed (the caller should exit with an error
+    message). Raises AuthAborted when the user aborts a prompt.
+
+    ``state`` may carry a pre-probed session state (the splash probes
+    in a worker thread so the boot UI stays responsive); when None the
+    state is probed here.
+    """
+    stream = stream or sys.stderr
+    log = log or (lambda msg: None)
+    if state is None:
+        state = client.session_state()
+    if state == SESSION_UNLOCKED:
+        log("pass-cli session valid")
+        return True
+    if state == SESSION_LOCKED:
+        log("pass-cli session locked, prompting for the lock code")
+        while True:
+            code = prompt_lock()
+            try:
+                client.unlock_session(code)
+            except SessionLockedError:
+                _say(stream, "pass-tui: wrong lock code, try again.")
+                log("wrong lock code")
+                continue
+            except PassCliError as exc:
+                _say(stream, f"pass-tui: unlock failed: {exc}")
+                log(f"unlock failed: {exc}")
+                return False
+            if client.session_state() != SESSION_UNLOCKED:
+                _say(
+                    stream,
+                    "pass-tui: unlock did not establish a usable session.",
+                )
+                log("unlock succeeded but session check failed")
+                return False
+            log("session unlocked")
+            return True
+    log("pass-cli not authenticated, prompting for a personal access token")
+    token = prompt_token()
+    try:
+        client.login_with_token(token)
+    except PassCliError as exc:
+        _say(stream, f"pass-tui: login failed: {exc}")
+        log(f"login failed: {exc}")
+        return False
+    if client.session_state() != SESSION_UNLOCKED:
+        _say(
+            stream,
+            "pass-tui: login did not establish a session "
+            "(token invalid or expired?).",
+        )
+        log("login succeeded but session check failed")
+        return False
+    log("logged in with personal access token")
+    return True
+
+
+def setup_session_locks(
+    client: PassCli,
+    config: Config,
+    prompt_lock: Callable[[], str] = prompt_for_lock_code,
+    stream=None,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    """Best-effort session-lock setup, called once an unlocked session
+    exists. Default-on conveniences, all no-ops on failure:
+
+    - If the session has no lock yet and config.lock_idle_timeout > 0,
+      prompt for a lock code and create the lock with that idle
+      timeout. Skipped for PAT sessions (pass-cli refuses locks on
+      them) — detected via session_has_lock plus a refused create.
+    """
+    stream = stream or sys.stderr
+    log = log or (lambda msg: None)
+    if config.lock_idle_timeout <= 0:
+        return
+    if client.session_has_lock():
+        log("session lock already configured")
+        return
+    log("no session lock configured, prompting to create one")
+    _say(stream, "pass-tui: protect this session with a lock code?")
+    _say(
+        stream,
+        f"It will lock after {config.lock_idle_timeout} s idle and pass-tui will",
+    )
+    _say(stream, f"ask for the code (see {_LOCK_URL}). Ctrl-c to skip.")
+    try:
+        code = prompt_lock()
+    except AuthAborted:
+        log("session lock setup skipped")
+        return
+    try:
+        client.create_lock(code, config.lock_idle_timeout)
+    except PassCliError as exc:
+        # PAT sessions and other unsupported setups refuse locks; the
+        # session still works, so this is informational only.
+        log(f"session lock setup failed (skipped): {exc}")
+        return
+    log(f"session lock created (idle timeout {config.lock_idle_timeout} s)")

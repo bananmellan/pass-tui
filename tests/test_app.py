@@ -66,6 +66,11 @@ class FakeClient:
         self.view_calls.append(item_ref)
         return json.loads(self.view)
 
+    def view_item(self, item_ref):
+        # Live fetch used when copying a sensitive field.
+        self.view_calls.append(item_ref)
+        return json.loads(self.view)
+
     def totp(self, item_ref):
         self.totp_calls.append(item_ref)
         return self.totp_value
@@ -98,15 +103,37 @@ def test_start_lists_cached_items_sorted(tmp_path):
     assert isinstance(screen, ListScreen)
     assert [r.title for r in screen.refs] == ["Bank", "GitHub"]
     assert screen.query == ""
+    # Rofi-style: an empty prompt shows no results.
+    assert screen.visible == []
+    # Typing one character brings results back.
+    screen = app.handle_key("g")
+    assert "GitHub" in [r.title for r in screen.visible]
+
+
+def test_empty_query_shows_nothing_even_with_cache(tmp_path):
+    app = make_app(tmp_path, refs=[ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))])
+    screen = app.start()
+    assert screen.query == ""
+    assert screen.visible == []
+    assert screen.selected_ref is None
+    # Whitespace-only counts as empty.
+    screen = app.handle_key(" ")
+    assert screen.visible == []
 
 
 def test_start_rebuilds_when_cache_missing(tmp_path):
     client = FakeClient(items=([ref()], 1))
     app = make_app(tmp_path, client=client, refs=None)
-    # No cache dumped; start() must rebuild.
+    # No cache dumped; start() kicks off a background rebuild.
     screen = app.start()
     assert client.list_calls == 1
+    assert app.busy  # "Reloading items..." while the rebuild runs
+    # The background rebuild lands and poll_refresh re-renders the list.
+    assert app._bg_done.wait(timeout=5)
+    screen = app.poll_refresh()
+    assert isinstance(screen, ListScreen)
     assert [r.title for r in screen.refs] == ["GitHub"]
+    assert app.busy == ""
     assert (Path(app.config.cache_dir) / CACHE_NAME).exists()
 
 
@@ -121,7 +148,12 @@ def test_start_rebuild_failure_shows_empty_list(tmp_path):
     screen = app.start()
     assert isinstance(screen, ListScreen)
     assert screen.refs == []
-    # A failed initial rebuild must not crash later refreshes either.
+    # The failed background rebuild clears the busy indicator; the
+    # list stays empty (no stale cache to fall back to).
+    assert app._bg_done.wait(timeout=5)
+    assert app.poll_refresh() is None
+    assert app.busy == ""
+    # A later refresh must not crash either.
     screen = app.handle_key("ctrl_r")
     assert isinstance(screen, ListScreen)
 
@@ -231,6 +263,7 @@ def test_clipboard_no_match_shows_full_list(tmp_path):
     assert isinstance(screen, ListScreen)
     assert screen.query == ""
     assert [r.title for r in screen.refs] == ["GitHub"]
+    assert screen.visible == []  # empty prompt: no results shown
 
 
 def test_clipboard_non_url_ignored(tmp_path):
@@ -276,11 +309,13 @@ def test_copy_then_launch_with_url_still_matches(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")  # open GitHub
     assert isinstance(app.screen, FieldScreen)
     app.handle_key("down")  # note
     app.handle_key("down")  # password
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")  # copy password -> quit
     assert clipboard.written == ["secret"]
     # Now the clipboard holds the secret; a URL launch must still match.
@@ -295,6 +330,7 @@ def test_reopen_after_copy_is_one_shot(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     # labels: note, password, totp, url: ..., username (field_labels order)
@@ -303,6 +339,7 @@ def test_reopen_after_copy_is_one_shot(tmp_path):
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["secret"]
     assert app.state.get_last_copied() is not None
@@ -323,6 +360,7 @@ def test_reopen_after_copy_is_one_shot(tmp_path):
 def test_open_item_does_not_arm_reopen(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     assert app.state.get_last_copied() is None
@@ -332,11 +370,17 @@ def test_close_without_copy_then_relaunch_shows_list(tmp_path):
     client = FakeClient()
     app = make_app(tmp_path, client=client, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
-    # Quit without copying (esc from fields goes back to list; esc again quits).
+    # Quit without copying: esc from fields goes back to the list (with
+    # the query restored), the next esc clears the query, and the third
+    # esc quits.
     app.handle_key("esc")
     assert isinstance(app.screen, ListScreen)
+    assert app.screen.query == "GitHub"  # restored
+    app.handle_key("esc")  # clears the query
+    assert app.screen.query == ""
     with pytest.raises(QuitRequested):
         app.handle_key("esc")
     client.view_calls.clear()
@@ -353,12 +397,14 @@ def test_reopen_window_expired_shows_list(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()], now=lambda: now[0])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["secret"]
     # Move beyond the 20 s reopen window.
@@ -382,13 +428,15 @@ def test_typing_filters_list_live(tmp_path):
     screen = app.handle_key("backspace")
     screen = app.handle_key("backspace")
     screen = app.handle_key("backspace")
-    assert [r.title for r in screen.visible] == ["Bank", "GitHub", "GitLab"]
+    # Empty prompt: no results shown until at least one character.
+    assert screen.visible == []
 
 
 def test_enter_opens_selected_item(tmp_path):
     client = FakeClient()
     app = make_app(tmp_path, client=client, refs=[ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",))])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     screen = app.handle_key("enter")  # Bank is first (title-sorted)
     assert isinstance(screen, FieldScreen)
     assert client.view_calls[0].item_id == "i2"
@@ -401,6 +449,7 @@ def test_navigation_keys(tmp_path):
     )
     screen = app.start()
     assert screen.selected == 0
+    screen.query = "a"  # empty prompt shows no results; seed one
     screen = app.handle_key("down")
     assert screen.selected == 1
     screen = app.handle_key("down")
@@ -433,6 +482,7 @@ def test_esc_in_list_with_query_clears_query_then_quits(tmp_path):
 def test_esc_in_fields_returns_to_list(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     screen = app.handle_key("esc")
@@ -440,9 +490,59 @@ def test_esc_in_fields_returns_to_list(tmp_path):
     assert [r.title for r in screen.refs] == ["GitHub"]
 
 
+def test_search_query_persists_after_open_and_back(tmp_path):
+    """Searching, opening an item, then going back must restore the
+    search query (and the filtered list), not start over."""
+    app = make_app(
+        tmp_path,
+        refs=[
+            ref(),
+            ref("s1", "i2", "GitLab", ("https://gitlab.com",)),
+            ref("s1", "i3", "Bank", ("https://bank.example.com",)),
+        ],
+    )
+    app.start()
+    for ch in "git":
+        app.handle_key(ch)
+    assert app.screen.query == "git"
+    assert [r.title for r in app.screen.visible] == ["GitHub", "GitLab"]
+    # Open the first match, then go back.
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    screen = app.handle_key("esc")
+    assert isinstance(screen, ListScreen)
+    assert screen.query == "git"
+    assert [r.title for r in screen.visible] == ["GitHub", "GitLab"]
+
+
+def test_search_query_and_selection_persist_after_open_and_back(tmp_path):
+    """Selection (not just the query) survives the round-trip."""
+    app = make_app(
+        tmp_path,
+        refs=[
+            ref("s1", "i1", "GitHub", ("https://github.com",)),
+            ref("s1", "i2", "GitLab", ("https://gitlab.com",)),
+            ref("s1", "i3", "Bank", ("https://bank.example.com",)),
+        ],
+    )
+    app.start()
+    for ch in "git":
+        app.handle_key(ch)
+    app.handle_key("down")  # select GitLab
+    assert app.screen.selected == 1
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    screen = app.handle_key("esc")
+    assert isinstance(screen, ListScreen)
+    assert screen.query == "git"
+    assert screen.selected == 1
+    assert screen.selected_ref.title == "GitLab"
+
+
 def test_fields_typing_filters_fields(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     screen = app.screen
     assert isinstance(screen, FieldScreen)
@@ -458,12 +558,14 @@ def test_field_enter_copies_value_and_quits(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["secret"]
     # The reopen-after-copy memory is armed before quitting.
@@ -482,6 +584,7 @@ def test_failed_copy_does_not_quit(tmp_path):
     clipboard.write = fail
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("password")
@@ -498,12 +601,14 @@ def test_field_enter_copies_totp(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("totp")
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["123456"]
     assert client.totp_calls
@@ -513,6 +618,7 @@ def test_field_enter_copies_url(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     url_label = next(l for l in labels if l.startswith("url: "))
@@ -520,6 +626,7 @@ def test_field_enter_copies_url(tmp_path):
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["https://github.com"]
 
@@ -527,6 +634,7 @@ def test_field_enter_copies_url(tmp_path):
 def test_field_navigation_and_filter(tmp_path):
     app = make_app(tmp_path, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     screen = app.screen
     assert isinstance(screen, FieldScreen)
@@ -570,12 +678,14 @@ def test_ctrl_c_quits_and_clears_reopen_memory(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
     idx = labels.index("password")
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert app.state.get_last_copied() is not None
     with pytest.raises(QuitRequested):
@@ -591,7 +701,9 @@ def test_duplicate_titles_open_exact_item(tmp_path):
         refs=[ref(), ref("s2", "i2", "GitHub", ("https://github.com/other",), "Work")],
     )
     screen = app.start()
-    # Both titled GitHub; select the second one.
+    # Both titled GitHub; select the second one. Seed a query first:
+    # an empty prompt shows no results.
+    screen.query = "GitHub"
     screen = app.handle_key("down")
     assert screen.selected_ref.item_id == "i2"
     screen = app.handle_key("enter")
@@ -609,6 +721,7 @@ def test_view_failure_returns_to_list_with_message(tmp_path):
     client.view_item_with_retry = boom
     app = make_app(tmp_path, client=client, refs=[ref()])
     screen = app.start()
+    app.screen.query = app.screen.refs[0].title
     screen = app.handle_key("enter")
     assert isinstance(screen, ListScreen)
     assert "Could not open" in screen.message
@@ -634,12 +747,14 @@ def test_item_with_only_extra_fields_opens(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[ref(title="Mors enheter")])
     screen = app.start()
+    app.screen.query = app.screen.refs[0].title
     screen = app.handle_key("enter")
     assert isinstance(screen, FieldScreen)
     assert "field: iPhone PIN" in screen.labels
     assert "field: MacBook" in screen.labels
     # Copy the first extra field; copying quits.
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["1234"]
 
@@ -649,6 +764,7 @@ def test_no_readable_fields_returns_to_list(tmp_path):
     client = FakeClient(view=view)
     app = make_app(tmp_path, client=client, refs=[ref(title="Empty")])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     screen = app.handle_key("enter")
     assert isinstance(screen, ListScreen)
     assert "No readable fields" in screen.message
@@ -683,10 +799,12 @@ def test_alias_item_opens_with_readable_email_field(tmp_path):
         refs=[ItemRef("s1", "i1", "affection_thorn212@slmail.me", (), "Personal", "Alias")],
     )
     app.start()
+    app.screen.query = app.screen.refs[0].title
     screen = app.handle_key("enter")
     assert isinstance(screen, FieldScreen)
     assert screen.labels == ["email: affection_thorn212@slmail.me"]
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["affection_thorn212@slmail.me"]
 
@@ -722,6 +840,7 @@ def test_field_previews_censor_hidden_fields(tmp_path):
     clipboard = FakeClipboard()
     app = make_app(tmp_path, client=FakeClient(view=view), clipboard=clipboard, refs=[ref()])
     app.start()
+    app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     assert isinstance(app.screen, FieldScreen)
     previews = app.field_values()
@@ -743,6 +862,7 @@ def test_field_previews_censor_hidden_fields(tmp_path):
     for _ in range(idx):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
+        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
     assert clipboard.written == ["s3cret"]
 
@@ -771,3 +891,316 @@ def test_verbose_log_records_decisions(tmp_path):
     assert any("clipboard read" in m for m in messages)
     assert any("extracted host: 'github.com'" in m for m in messages)
     assert any("matched 1 items" in m for m in messages)
+
+
+# ------------------------------------------------- cached fields / busy
+
+from pass_tui.fields import HIDDEN_PREVIEW
+
+SAFE_REF = ItemRef(
+    "s1", "i1", "GitHub",
+    ("https://github.com",), "Personal", "Login",
+    safe_fields=(
+        ("note", "work account"),
+        ("username", "me"),
+        ("password", ""),
+        ("totp", ""),
+        ("url: https://github.com", "https://github.com"),
+    ),
+)
+
+
+def test_open_item_with_cached_fields_skips_passcli(tmp_path):
+    """An item whose fields were captured at rebuild time opens
+    instantly: no view_item/view_item_with_retry call."""
+    client = FakeClient()
+    app = make_app(tmp_path, client=client, refs=[SAFE_REF])
+    screen = app.start()
+    app.screen.query = "GitHub"
+    screen = app.handle_key("enter")
+    assert isinstance(screen, FieldScreen)
+    assert client.view_calls == []
+    assert app.busy == ""
+    # Menu shows the same labels as a live view would.
+    assert "note" in screen.labels
+    assert "username" in screen.labels
+    assert "password" in screen.labels
+    assert "totp" in screen.labels
+    # Previews: safe values shown, secrets censored.
+    previews = app.field_values()
+    assert previews["username"] == "me"
+    assert previews["note"] == "work account"
+    assert previews["password"] == HIDDEN_PREVIEW
+    assert "totp" not in previews
+
+
+def test_copy_safe_field_uses_cache_without_passcli(tmp_path):
+    """Copying a non-sensitive field is served from the cache."""
+    client = FakeClient()
+    clipboard = FakeClipboard()
+    app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[SAFE_REF])
+    app.start()
+    app.screen.query = "GitHub"
+    app.handle_key("enter")
+    screen = app.screen
+    labels = screen.labels
+    idx = labels.index("username")
+    for _ in range(idx):
+        app.handle_key("down")
+    with pytest.raises(QuitRequested):
+        app.screen.query = ""
+        app.handle_key("enter")
+    assert clipboard.written == ["me"]
+    assert client.view_calls == []
+    assert app.busy == ""
+
+
+def test_copy_sensitive_field_fetches_live(tmp_path):
+    """Copying a hidden field fetches the value live from pass-cli;
+    the cached ref never carried the secret."""
+    client = FakeClient()
+    clipboard = FakeClipboard()
+    app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[SAFE_REF])
+    app.start()
+    app.screen.query = "GitHub"
+    app.handle_key("enter")
+    labels = app.screen.labels
+    idx = labels.index("password")
+    for _ in range(idx):
+        app.handle_key("down")
+    with pytest.raises(QuitRequested):
+        app.screen.query = ""
+        app.handle_key("enter")
+    assert clipboard.written == ["secret"]
+    # Exactly one live fetch for the sensitive copy.
+    assert len(client.view_calls) == 1
+    assert client.view_calls[0].item_id == "i1"
+    assert app.busy == ""
+
+
+def test_copy_totp_calls_client_totp(tmp_path):
+    client = FakeClient(totp="654321")
+    clipboard = FakeClipboard()
+    app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[SAFE_REF])
+    app.start()
+    app.screen.query = "GitHub"
+    app.handle_key("enter")
+    labels = app.screen.labels
+    idx = labels.index("totp")
+    for _ in range(idx):
+        app.handle_key("down")
+    with pytest.raises(QuitRequested):
+        app.screen.query = ""
+        app.handle_key("enter")
+    assert clipboard.written == ["654321"]
+    assert len(client.totp_calls) == 1
+    assert client.view_calls == []
+    assert app.busy == ""
+
+
+def test_open_item_without_cached_fields_falls_back_to_live(tmp_path):
+    """Refs written before safe-field caching (empty safe_fields)
+    still open via a live pass-cli view, with a busy indicator."""
+    client = FakeClient()
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    screen = app.start()
+    app.screen.query = "GitHub"
+    busy_seen = []
+    orig = app._set_busy
+
+    def spy(what):
+        busy_seen.append(what)
+        orig(what)
+
+    app._set_busy = spy
+    screen = app.handle_key("enter")
+    assert isinstance(screen, FieldScreen)
+    assert len(client.view_calls) == 1
+    assert any("Loading" in b for b in busy_seen)
+    assert app.busy == ""
+
+
+def test_busy_set_and_cleared_around_rebuild(tmp_path):
+    client = FakeClient(items=([ref()], 1))
+    app = make_app(tmp_path, client=client, refs=None)
+    busy_seen = []
+    orig = app._set_busy
+
+    def spy(what):
+        busy_seen.append(what)
+        orig(what)
+
+    app._set_busy = spy
+    app.start()
+    assert any("Reloading" in b for b in busy_seen)
+    assert app.busy  # still refreshing in the background
+    assert app._bg_done.wait(timeout=5)
+    app.poll_refresh()
+    assert app.busy == ""
+
+
+def test_busy_set_and_cleared_around_ctrl_r(tmp_path):
+    client = FakeClient(items=([ref()], 1))
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    app.start()
+    busy_seen = []
+    orig = app._set_busy
+
+    def spy(what):
+        busy_seen.append(what)
+        orig(what)
+
+    app._set_busy = spy
+    app.handle_key("ctrl_r")
+    assert any("Reloading" in b for b in busy_seen)
+    assert app.busy == ""
+
+
+def test_busy_cleared_when_open_fails(tmp_path):
+    client = FakeClient()
+
+    def boom(item_ref):
+        raise PassCliError("gone")
+
+    client.view_item_with_retry = boom
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    screen = app.start()
+    app.screen.query = "GitHub"
+    screen = app.handle_key("enter")
+    assert isinstance(screen, ListScreen)
+    assert app.busy == ""
+
+
+def test_busy_cleared_when_sensitive_copy_fails(tmp_path):
+    client = FakeClient()
+
+    def boom(item_ref):
+        raise PassCliError("gone")
+
+    client.view_item = boom
+    clipboard = FakeClipboard()
+    app = make_app(tmp_path, client=client, clipboard=clipboard, refs=[SAFE_REF])
+    app.start()
+    app.screen.query = "GitHub"
+    app.handle_key("enter")
+    labels = app.screen.labels
+    idx = labels.index("password")
+    for _ in range(idx):
+        app.handle_key("down")
+    screen = app.handle_key("enter")  # copy fails, no quit
+    assert isinstance(screen, FieldScreen)
+    assert screen.message == "Nothing to copy"
+    assert clipboard.written == []
+    assert app.busy == ""
+
+
+# ------------------------------------------------- background refresh
+
+
+def _wait_bg(app, timeout=5):
+    assert app._bg_done.wait(timeout=timeout)
+    return app.poll_refresh()
+
+
+def test_start_with_stale_cache_renders_stale_and_refreshes(tmp_path):
+    """A stale-but-present cache renders immediately; a background
+    rebuild refreshes it and poll_refresh re-renders the list."""
+    import os
+    import time as _time
+
+    from pass_tui.cache import Cache
+    from pass_tui.passcli import PassCli
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    stale = ref("s1", "i1", "GitHub", ("https://github.com",))
+    dump_cache([stale], cache_dir / CACHE_NAME)
+    old = _time.time() - 10_000
+    os.utime(cache_dir / CACHE_NAME, (old, old))
+
+    fresh = ref("s1", "i2", "Bank", ("https://bank.example.com",))
+    client = FakeClient(items=([fresh], 1))
+    config = Config(cache_dir=str(cache_dir), cache_ttl=600)
+    cache = Cache(cache_dir / CACHE_NAME, client, ttl=config.cache_ttl)
+    state = StateStore(cache_dir)
+    app = App(config, cache, state, client, FakeClipboard())
+
+    screen = app.start()
+    # Stale list renders synchronously — no blocking rebuild.
+    assert [r.title for r in screen.refs] == ["GitHub"]
+    assert client.list_calls == 1  # background rebuild kicked off
+    assert app.busy  # "Reloading items..." while it runs
+    screen = _wait_bg(app)
+    assert [r.title for r in screen.refs] == ["Bank"]
+    assert app.busy == ""
+    # Cache file on disk is the fresh one now.
+    from pass_tui.cache import load_cache
+
+    assert [r.title for r in load_cache(cache_dir / CACHE_NAME)] == ["Bank"]
+
+
+def test_start_with_fresh_cache_does_not_rebuild(tmp_path):
+    client = FakeClient(items=([ref()], 1))
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    screen = app.start()
+    assert [r.title for r in screen.refs] == ["GitHub"]
+    assert client.list_calls == 0
+    assert app.busy == ""
+    assert app.poll_refresh() is None
+
+
+def test_poll_refresh_returns_none_while_running(tmp_path):
+    client = FakeClient(items=([ref()], 1))
+    app = make_app(tmp_path, client=client, refs=None)
+    app.start()
+    # Either the refresh already finished (poll returns a screen) or
+    # it is still running (poll returns None) — never raises.
+    result = app.poll_refresh()
+    if result is None:
+        assert app.busy  # still refreshing
+        result = _wait_bg(app)
+        assert [r.title for r in result.refs] == ["GitHub"]
+    else:
+        assert [r.title for r in result.refs] == ["GitHub"]
+
+
+def test_poll_refresh_noop_when_no_refresh_started(tmp_path):
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    assert app.poll_refresh() is None
+    assert app.busy == ""
+
+
+class _SlowClient(FakeClient):
+    """list_all_items blocks until released, so a second refresh
+    attempt observably overlaps the first."""
+
+    def __init__(self, items):
+        super().__init__(items=items)
+        import threading
+
+        self._gate = threading.Event()
+        self.calls = 0
+
+    def list_all_items(self):
+        self.calls += 1
+        self._gate.wait(timeout=5)
+        return super().list_all_items()
+
+
+def test_refresh_async_skipped_while_one_is_running(tmp_path):
+    client = _SlowClient(items=([ref()], 1))
+    app = make_app(tmp_path, client=client, refs=None)
+    app.start()
+    first = app._refresh_thread
+    assert first is not None and first.is_alive()
+    app._refresh_async()  # second call must not start another thread
+    assert app._refresh_thread is first
+    assert client.calls == 1
+    client._gate.set()
+    _wait_bg(app)
+    # After the first refresh finished, a new one can start again.
+    app._refresh_async()
+    assert app._refresh_thread is not None and app._refresh_thread is not first
+    client._gate.set()
+    _wait_bg(app)

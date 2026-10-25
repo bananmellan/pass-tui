@@ -65,7 +65,150 @@ def _pair(n: int) -> int:
     return curses.color_pair(n) if _COLORS_READY else 0
 
 
-def _key_name(ch: int) -> str:
+# CSI/SS3 escape sequences that terminfo for common terminals (xterm,
+# tmux, screen, …) only defines in SS3 form (ESC O A) while the terminal
+# actually sends the CSI form (ESC [ A). We parse these manually because
+# keypad() translation via getch() only recognises the terminfo sequences.
+_CSI_KEYS = {
+    "\x1b[A": "up",
+    "\x1b[B": "down",
+    "\x1b[C": "right",
+    "\x1b[D": "left",
+    "\x1b[H": "home",
+    "\x1b[F": "end",
+    "\x1b[1~": "home",
+    "\x1b[4~": "end",
+    "\x1b[5~": "pageup",
+    "\x1b[6~": "pagedown",
+    "\x1b[3~": "delete",
+    "\x1b[Z": "backtab",
+    "\x1bOH": "home",
+    "\x1bOF": "end",
+}
+
+# Characters that terminate a CSI escape sequence.
+_CSI_FINAL = "ABCDEFGHF~JKPST"
+# Characters that terminate an SS3 escape sequence (ESC + one char).
+_SS3_FINAL = "ABCDHFOPQRS"
+
+
+class _EscapeSequence:
+    """Result of reading an ESC-prefixed input sequence.
+
+    `rest` holds the continuation bytes read after the initial ESC:
+    empty for a lone ESC, the remaining bytes of a CSI/SS3 sequence,
+    or a leading ESC byte when two ESCs arrived back-to-back (the
+    caller should treat the first as lone ESC and re-process the
+    second on the next read_key() call).
+    """
+
+    __slots__ = ("rest",)
+
+    def __init__(self, rest: bytes):
+        self.rest = rest
+
+
+def _read_escape_sequence(stdscr, first: int) -> _EscapeSequence:
+    """Read the rest of an escape sequence after the initial ESC byte.
+
+    Uses nodelay so a lone ESC returns promptly.
+    """
+    stdscr.nodelay(True)
+    seq = bytearray()
+    try:
+        while len(seq) < 7:  # up to 7 continuation bytes after ESC
+            b = stdscr.getch()
+            if b == -1 or b >= 256:
+                break
+            seq.append(b)
+            if len(seq) >= 2 and chr(seq[-1]) in _CSI_FINAL:
+                break
+            if len(seq) == 1 and chr(seq[0]) in _SS3_FINAL:
+                break
+            if b == 27:
+                # Another ESC: stop here so the caller can re-process it.
+                break
+    finally:
+        stdscr.nodelay(False)
+    return _EscapeSequence(bytes(seq))
+
+
+def _read_utf8_char(stdscr, first: int) -> str:
+    """Read the remaining bytes of a multi-byte UTF-8 character.
+
+    `first` is the lead byte already consumed by getch(). Returns the
+    decoded character, or chr(first) on failure.
+    """
+    if first >= 0xF0:
+        need = 3
+    elif first >= 0xE0:
+        need = 2
+    elif first >= 0xC0:
+        need = 1
+    else:
+        return chr(first)
+    raw = bytearray([first])
+    stdscr.nodelay(True)
+    try:
+        for _ in range(need):
+            b = stdscr.getch()
+            if b == -1 or b >= 256:
+                break
+            raw.append(b)
+    finally:
+        stdscr.nodelay(False)
+    try:
+        return bytes(raw).decode("utf-8")
+    except UnicodeDecodeError:
+        return chr(first)
+
+
+def read_key(stdscr) -> int | str | None:
+    """Read one logical key from the terminal.
+
+    Returns:
+    - ``int >= 256``: a function key code (arrows, page up/down, …)
+      translated by curses keypad() from the terminfo database.
+    - ``int 0–255``: a single ASCII byte (printable char, control
+      char, backspace, …).
+    - ``str``: either a decoded multi-byte character (e.g. "å") or a
+      symbolic name ("up", "down", …) parsed from a CSI escape
+      sequence that terminfo did not cover.
+    - ``None``: no input within the timeout.
+
+    The hybrid approach keeps keypad() translation for SS3 sequences
+    (which terminfo defines for xterm/tmux/screen) while manually
+    decoding UTF-8 multi-byte characters and CSI escape sequences
+    (which terminfo may not define for the active TERM).
+    """
+    ch = stdscr.getch()
+    if ch == -1:
+        return None
+    if ch >= 256:
+        return ch
+    if ch == 27:
+        esc = _read_escape_sequence(stdscr, ch)
+        if not esc.rest:
+            return 27  # lone ESC
+        if esc.rest[0] == 27:
+            # Two ESCs back-to-back: this one is lone ESC, push the
+            # second back so the next read_key() picks it up.
+            curses.ungetch(27)
+            return 27
+        text = ("\x1b" + esc.rest.decode("latin-1"))
+        if text in _CSI_KEYS:
+            return _CSI_KEYS[text]
+        return 27  # unrecognised sequence: treat as ESC
+    if ch >= 128:
+        return _read_utf8_char(stdscr, ch)
+    return ch
+
+
+def _key_name(ch: int | str) -> str:
+    if isinstance(ch, str):
+        # Already a symbolic name (from CSI sequence parsing) or a
+        # decoded multi-byte character.
+        return ch
     if ch == curses.KEY_UP:
         return "up"
     if ch == curses.KEY_DOWN:
@@ -211,6 +354,9 @@ def _draw_list(stdscr, app: App) -> None:
         status = f"{screen.message}  \u2014  {status}"
     status += "  \u00b7  enter: open  esc/ctrl-l: back/quit  ctrl-r: refresh"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
+    if app.busy:
+        _put(stdscr, 0, max(0, width - len(app.busy) - 1), app.busy,
+             curses.A_BOLD | _pair(_PAIR_PROMPT))
     stdscr.move(1, min(2 + len(screen.query), width - 1))
     stdscr.refresh()
 
@@ -331,35 +477,250 @@ def _draw_fields(stdscr, app: App, field_values: dict[str, str] | None = None) -
         status = f"{screen.message}  \u2014  {status}"
     status += "  \u00b7  enter: copy  esc/ctrl-l: back"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
+    if app.busy:
+        _put(stdscr, 0, max(0, width - len(app.busy) - 1), app.busy,
+             curses.A_BOLD | _pair(_PAIR_PROMPT))
     stdscr.move(1, min(2 + len(screen.query), width - 1))
     stdscr.refresh()
 
 
 def run(app: App) -> None:
-    """Run the curses event loop until the user quits."""
-    app.start()
+    """Run the curses event loop until the user quits.
+
+    The UI is brought up before the initial load so a slow cache
+    rebuild shows a loading indicator instead of an empty screen.
+    """
     curses.wrapper(_loop, app)
+
+
+def _draw(stdscr, app: App) -> None:
+    if isinstance(app.screen, FieldScreen):
+        _draw_fields(stdscr, app, app.field_values())
+    else:
+        _draw_list(stdscr, app)
+
+
+# Keys that may trigger a slow pass-cli call; while one runs, the busy
+# indicator is shown immediately (before the handler returns).
+_BUSY_PREVIEW = {
+    "ctrl_r": "Reloading items\u2026",
+    "enter": "Loading\u2026",
+}
 
 
 def _loop(stdscr, app: App) -> None:
     curses.curs_set(1)
     stdscr.keypad(True)
     _init_colors()
+    if not app._started:
+        app.start()
     while True:
-        if isinstance(app.screen, FieldScreen):
-            _draw_fields(stdscr, app, app.field_values())
-        else:
-            _draw_list(stdscr, app)
+        # A background cache refresh (stale/missing cache at launch)
+        # re-renders the list as soon as it lands — even while the
+        # loop is blocked in getch().
+        refreshed = app.poll_refresh()
+        if refreshed is not None:
+            _draw(stdscr, app)
+            continue
+        _draw(stdscr, app)
+        stdscr.timeout(100)
         try:
-            ch = stdscr.getch()
+            key = read_key(stdscr)
         except KeyboardInterrupt:
             return
-        name = _key_name(ch)
+        finally:
+            stdscr.timeout(-1)
+        if key is None:
+            continue
+        name = _key_name(key)
         if not name:
             continue
+        # If this key may block, show the indicator before handling it
+        # so the user gets feedback during the wait. The app sets its
+        # own busy text when a slow operation actually starts; when the
+        # operation turns out to be instant (cache hit) the preview is
+        # reclaimed here so the indicator never sticks.
+        preview = name in _BUSY_PREVIEW and not app.busy
+        if preview:
+            app.busy = _BUSY_PREVIEW[name]
+            _draw(stdscr, app)
         try:
             app.handle_key(name)
         except QuitRequested:
             return
         except KeyboardInterrupt:
             return
+        finally:
+            if preview and app.busy == _BUSY_PREVIEW[name]:
+                app.busy = ""
+
+
+class Splash:
+    """Boot screen shown while the auth gate and initial load run.
+
+    The UI comes up before any pass-cli call so a slow session probe
+    never leaves a blank terminal: the splash draws a title, a status
+    line ("Checking session…", "Loading items…", gate messages)
+    and, when the gate asks for input, a prompt line. Prompts (lock
+    code, access token, lock setup) read hidden input here — the
+    typed text is never drawn. Esc/Ctrl-c at a prompt aborts it.
+    """
+
+    def __init__(self, stdscr) -> None:
+        self._stdscr = stdscr
+        self.status = "Starting…"
+        self._prompt_label = ""
+        self._input = ""
+        stdscr.keypad(True)
+
+    def note(self, text: str) -> None:
+        """Update the status line (also used for gate messages)."""
+        self.status = text
+        self._prompt_label = ""  # a status update ends any prompt display
+        self._redraw()
+
+    def redraw(self) -> None:
+        self._redraw()
+
+    def prompt(self, label: str = "") -> str:
+        """Prompt for hidden input on the splash's prompt line.
+
+        Echo is disabled; the typed text is never drawn. Backspace
+        edits, Enter accepts. Raises AuthAborted on Esc/Ctrl-c/EOF.
+        """
+        from .auth import AuthAborted
+
+        self._prompt_label = label
+        self._input = ""
+        curses.curs_set(1)
+        self._redraw()
+        while True:
+            try:
+                key = read_key(self._stdscr)
+            except KeyboardInterrupt:
+                raise AuthAborted() from None
+            if key is None:
+                continue
+            if isinstance(key, str):
+                # Decoded multi-byte character or named key from a CSI
+                # sequence. Named keys (arrows etc.) are not useful in a
+                # hidden prompt; treat printable chars as input.
+                if len(key) == 1 and key.isprintable():
+                    self._input += key
+                    self._redraw()
+                continue
+            if key == 27 or key == 3:  # Esc / Ctrl-c
+                curses.curs_set(0)
+                raise AuthAborted() from None
+            if key in (10, 13, curses.KEY_ENTER):
+                curses.curs_set(0)
+                return self._input
+            if key in (curses.KEY_BACKSPACE, 127, 8):
+                self._input = self._input[:-1]
+                self._redraw()
+                continue
+            if 32 <= key < 127:
+                self._input += chr(key)
+                self._redraw()
+
+    def _redraw(self) -> None:
+        stdscr = self._stdscr
+        _height, width = stdscr.getmaxyx()
+        stdscr.erase()
+        _put(stdscr, 0, 0, "Proton Pass", curses.A_BOLD)
+        _put(stdscr, 1, 0, _truncate(self.status, width - 1), _pair(_PAIR_PROMPT))
+        if self._prompt_label:
+            _put(stdscr, 3, 0, _truncate(self._prompt_label, width - 1), curses.A_DIM)
+            # The input line shows one bullet per typed character; the
+            # input itself stays hidden.
+            _put(stdscr, 4, 0, "> ", _pair(_PAIR_PROMPT))
+            bullets = "●" * len(self._input)
+            _put(stdscr, 4, 2, _truncate(bullets, width - 3), _pair(_PAIR_PROMPT))
+            stdscr.move(4, min(2 + len(bullets), width - 1))
+        stdscr.refresh()
+
+
+def run_splash(stdscr, config, client):
+    """Boot the app behind a splash screen, inside a curses session.
+
+    Brings up the splash, probes the pass-cli session in a worker
+    thread (Esc/Ctrl-c during the probe cancels the boot), runs the
+    auth gate (lock-code / access-token prompts render on the splash),
+    builds the App and runs its non-blocking launch flow, then returns
+    (True, app). The caller continues with the main event loop on the
+    same stdscr.
+
+    Returns (False, None) when the user cancels during the boot or
+    authentication fails; the caller prints the outcome and exits.
+    The splash is torn down by the caller's draw (the list/field
+    screens erase before drawing).
+    """
+    import threading
+
+    from . import cli as _cli
+    from .auth import AuthAborted, ensure_authenticated, setup_session_locks
+    from .passcli import SESSION_LOGGED_OUT
+
+    _init_colors()
+    curses.curs_set(0)
+    splash = Splash(stdscr)
+
+    def gate_log(message: str) -> None:
+        if config.verbose:
+            splash.note(message)
+
+    # Probe the session in a worker thread so the splash stays live
+    # while pass-cli answers: Esc/Ctrl-c during the probe cancels.
+    splash.note("Checking session…")
+    probe: dict = {"state": None}
+    probe_done = threading.Event()
+
+    def do_probe() -> None:
+        try:
+            probe["state"] = client.session_state()
+        except Exception:
+            probe["state"] = SESSION_LOGGED_OUT
+        probe_done.set()
+
+    threading.Thread(target=do_probe, daemon=True).start()
+    stdscr.timeout(100)
+    try:
+        while not probe_done.is_set():
+            splash.redraw()
+            try:
+                ch = stdscr.getch()
+            except KeyboardInterrupt:
+                ch = 3
+            if ch in (27, 3):  # Esc / Ctrl-c
+                return False, None
+    finally:
+        stdscr.timeout(-1)
+
+    try:
+        authenticated = ensure_authenticated(
+            client,
+            state=probe["state"],
+            prompt_token=lambda: splash.prompt("Personal access token (input hidden): "),
+            prompt_lock=lambda: splash.prompt("Lock code (input hidden): "),
+            stream=splash.note,
+            log=gate_log,
+        )
+    except AuthAborted:
+        return False, None
+    if not authenticated:
+        return False, None
+    splash.note("Loading items…")
+    setup_session_locks(
+        client,
+        config,
+        prompt_lock=lambda: splash.prompt("New lock code (input hidden): "),
+        stream=splash.note,
+        log=gate_log,
+    )
+
+    app = _cli.build_app(config, client=client)
+    # The launch flow is non-blocking: it renders from the cache and
+    # refreshes stale/missing caches in the background, so the splash
+    # hands over to the list immediately.
+    app.start()
+    return True, app

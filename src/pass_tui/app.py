@@ -12,6 +12,7 @@ feeds keystrokes; tests drive the controller directly.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +21,13 @@ from typing import Callable
 from .cache import Cache, match_host, sort_refs
 from .clipboard import Clipboard, ClipboardError, extract_host
 from .config import Config
-from .fields import HIDDEN_PREVIEW, field_labels, field_value, hidden_field_labels
+from .fields import (
+    HIDDEN_PREVIEW,
+    cached_view_from_ref,
+    field_labels,
+    field_value,
+    hidden_field_labels,
+)
 from .models import ItemRef
 from .passcli import PassCli, PassCliError
 from .search import filter_items
@@ -43,6 +50,13 @@ class ListScreen:
 
     @property
     def visible(self) -> list[ItemRef]:
+        # Rofi-style: an empty prompt shows no results — items appear
+        # only once at least one character is in the search bar. The
+        # full list stays in self.refs (status bar, column widths).
+        # A clipboard-prefilled host counts as characters, so host
+        # matches still show on launch.
+        if not self.query.strip():
+            return []
         # While the clipboard-prefilled host is still in the query,
         # filter precisely (substring only) so unrelated items never
         # appear; once the user edits the query past the host, normal
@@ -108,8 +122,29 @@ class App:
         self.screen: Screen = ListScreen()
         self._item_view: dict = {}
         self._field_values: dict[str, str] = {}
+        # The list screen saved when an item is opened, so going back
+        # (esc from the field view) restores the search query, selection
+        # and scroll position instead of starting over.
+        self._saved_list: ListScreen | None = None
+        # Human-readable description of the in-flight operation (""
+        # when idle). The TUI renders it as a loading indicator.
+        self.busy: str = ""
+        # Set by start() so the TUI can skip the launch flow when the
+        # app was already started (e.g. seeded in tests).
+        self._started = False
+        # Background cache refresh (launch with a stale/missing cache).
+        self._refresh_thread: threading.Thread | None = None
+        self._bg_done = threading.Event()
+        self._bg_result: list[ItemRef] | None = None
 
     # ------------------------------------------------------------ helpers
+
+    def _set_busy(self, what: str) -> None:
+        self.busy = what
+        self._log(f"busy: {what}")
+
+    def _clear_busy(self) -> None:
+        self.busy = ""
 
     def _refresh_list(self, host_filter: str = "", matches: list[ItemRef] | None = None,
                       message: str = "") -> ListScreen:
@@ -132,16 +167,38 @@ class App:
             message=message,
         )
         self.screen = screen
+        self._saved_list = None
         self.state.set_stage(STAGE_LIST)
         self.state.set_open_item(None)
         return screen
 
     def _open_item(self, ref: ItemRef, message: str = "") -> Screen:
-        try:
-            data = self.client.view_item_with_retry(ref)
-        except PassCliError as exc:
-            self._log(f"view failed for {ref.title!r}: {exc}")
-            return self._refresh_list(message=f"Could not open {ref.title!r}")
+        """Open an item's field menu.
+
+        Non-sensitive fields are served from the cache (captured at
+        rebuild time via --show-secrets), so opening is instant. The
+        sensitive-field inventory (labels only, never values) is known
+        from the same capture; copying a sensitive field fetches the
+        value live from pass-cli.
+
+        The current list screen is saved so that going back (esc from
+        the field view) restores the search query and selection.
+        """
+        if isinstance(self.screen, ListScreen) and self.screen.refs:
+            self._saved_list = self.screen
+        data = cached_view_from_ref(ref)
+        if data is not None:
+            self._log(f"opened {ref.title!r} from cache ({len(ref.safe_fields)} fields)")
+        else:
+            self._log(f"no cached fields for {ref.title!r}, fetching from pass-cli")
+            self._set_busy(f"Loading {ref.title}…")
+            try:
+                data = self.client.view_item_with_retry(ref)
+            except PassCliError as exc:
+                self._log(f"view failed for {ref.title!r}: {exc}")
+                return self._refresh_list(message=f"Could not open {ref.title!r}")
+            finally:
+                self._clear_busy()
         labels = field_labels(data)
         if not labels:
             self._log(f"no readable fields for {ref.title!r}")
@@ -169,18 +226,40 @@ class App:
         return dict(self._field_values)
 
     def _copy_label(self, label: str) -> str:
+        """Copy a field's value to the clipboard.
+
+        Non-sensitive values come from the cache (instant). Sensitive
+        values (hidden fields, TOTP) are fetched live from pass-cli —
+        they are never cached. Returns the label on success, "" on
+        failure.
+        """
         screen = self.screen
         if not isinstance(screen, FieldScreen) or screen.ref is None:
             return ""
         ref = screen.ref
-        totp = ""
         if label == "totp":
+            self._set_busy("Generating TOTP code…")
             try:
-                totp = self.client.totp(ref)
+                value = self.client.totp(ref)
             except PassCliError as exc:
                 self._log(f"totp failed: {exc}")
                 return ""
-        value = field_value(self._item_view, label, totp=totp)
+            finally:
+                self._clear_busy()
+        elif label in hidden_field_labels(self._item_view):
+            # Sensitive field: fetch the live value from pass-cli.
+            # The cache holds the label inventory but never the value.
+            self._set_busy(f"Fetching {label}…")
+            try:
+                fresh = self.client.view_item(ref)
+            except PassCliError as exc:
+                self._log(f"live fetch failed for {label!r}: {exc}")
+                return ""
+            finally:
+                self._clear_busy()
+            value = field_value(fresh, label)
+        else:
+            value = field_value(self._item_view, label)
         if not value:
             return ""
         try:
@@ -206,6 +285,7 @@ class App:
            host prefilled as the query.
         3. Otherwise show the full list.
         """
+        self._started = True
         now = self._now()
         last = self.state.get_last_copied()
         self.state.clear_last_copied()
@@ -227,14 +307,8 @@ class App:
         if host:
             refs = self.cache.load()
             if not refs:
-                try:
-                    refs, raw_count = self.cache.rebuild()
-                    self._log(
-                        f"initial rebuild: {len(refs)} unique items from {raw_count} raw entries"
-                    )
-                except PassCliError as exc:
-                    self._log(f"initial rebuild failed: {exc}")
-                    refs = []
+                self._refresh_async()
+                return self._refresh_list()
             with_urls = sum(1 for ref in refs if ref.urls)
             self._log(f"cache: {len(refs)} items, {with_urls} with urls")
             matches = match_host(refs, host)
@@ -248,20 +322,55 @@ class App:
                 return self._refresh_list(host_filter=host, matches=matches)
             self._log("clipboard matching did not handle the launch")
 
-        try:
-            refs = self.cache.get()
-        except PassCliError as exc:
-            self._log(f"initial rebuild failed: {exc}")
-            refs = []
-        if not refs:
+        refs = self.cache.load()
+        if not refs or self.cache.is_stale():
+            self._refresh_async()
+        return self._refresh_list()
+
+    def _refresh_async(self) -> None:
+        """Kick off a cache rebuild in the background.
+
+        The list renders from the cache immediately (possibly empty or
+        stale) and is re-rendered from the fresh cache when the rebuild
+        finishes. The busy indicator stays up for the whole refresh.
+        """
+        if self._refresh_thread is not None and self._refresh_thread.is_alive():
+            return
+        self._set_busy("Reloading items…")
+
+        def work() -> None:
             try:
                 refs, raw_count = self.cache.rebuild()
                 self._log(
-                    f"initial rebuild: {len(refs)} unique items from {raw_count} raw entries"
+                    f"background rebuild: {len(refs)} unique items from {raw_count} raw entries"
                 )
+                self._bg_result = refs
             except PassCliError as exc:
-                self._log(f"initial rebuild failed: {exc}")
-        return self._refresh_list()
+                self._log(f"background rebuild failed: {exc}")
+            finally:
+                self._bg_done.set()
+
+        self._refresh_thread = threading.Thread(target=work, daemon=True)
+        self._refresh_thread.start()
+
+    def poll_refresh(self) -> Screen | None:
+        """Check a background refresh started by start()/_refresh_async.
+
+        Returns a re-rendered list screen when fresh items landed (and
+        clears the busy indicator), or None while the refresh is still
+        running. A failed refresh just clears the indicator — the list
+        keeps showing the previous (stale or empty) cache.
+        """
+        thread = self._refresh_thread
+        if thread is None or not self._bg_done.is_set():
+            return None
+        self._refresh_thread = None
+        self._bg_done.clear()
+        self._clear_busy()
+        if self._bg_result is not None:
+            self._bg_result = None
+            return self._refresh_list()
+        return None
 
     # ------------------------------------------------------------ keys
 
@@ -362,7 +471,7 @@ class App:
                 screen.selected = 0
                 screen.offset = 0
                 return screen
-            return self._refresh_list()
+            return self._restore_list()
         if key == "up":
             screen.selected = max(0, screen.selected - 1)
             return screen
@@ -394,7 +503,24 @@ class App:
             return screen
         return screen
 
+    def _restore_list(self) -> ListScreen:
+        """Go back from the field view to the list.
+
+        Restores the list screen saved when the item was opened (with
+        the search query, selection and scroll position intact) when
+        available; otherwise falls back to a fresh list.
+        """
+        saved = self._saved_list
+        self._saved_list = None
+        if saved is not None:
+            self.screen = saved
+            self.state.set_stage(STAGE_LIST)
+            self.state.set_open_item(None)
+            return saved
+        return self._refresh_list()
+
     def _refresh_action(self) -> Screen:
+        self._set_busy("Reloading items…")
         try:
             refs, raw_count = self.cache.rebuild()
             self._log(f"refresh: {len(refs)} unique items from {raw_count} raw entries")
@@ -405,6 +531,8 @@ class App:
                 return self._refresh_list(message=f"Refresh failed: {exc}")
             screen = self._refresh_list(message=f"Refresh failed: {exc}")
             return screen
+        finally:
+            self._clear_busy()
 
 
 class QuitRequested(Exception):

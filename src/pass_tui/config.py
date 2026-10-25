@@ -23,6 +23,13 @@ class Config:
     lock_seconds: int = 300
     debug: bool = False
     verbose: bool = False
+    # Session persistence/locking. Defaults keep a pass-cli account
+    # session usable across reboots (D-Bus Secret Service instead of the
+    # reboot-wiped kernel keyring) and PIN-protected after 10 minutes
+    # idle. Both are opt-out; PAT sessions cannot have a lock, so the
+    # lock setup is skipped silently for them.
+    keyring_backend: str = "dbus"  # "dbus", "kernel" or "off"
+    lock_idle_timeout: int = 600  # seconds; 0 disables the session lock
 
     @classmethod
     def from_env(cls, env) -> "Config":
@@ -45,4 +52,10 @@ class Config:
             lock_seconds=int(_env(env, "PASS_TUI_LOCK_SECONDS", "", "300")),
             debug=_env(env, "PASS_TUI_DEBUG", "PASS_ROFI_DEBUG", "") == "1",
             verbose=_env(env, "PASS_TUI_VERBOSE", "PASS_ROFI_VERBOSE", "") == "1",
+            keyring_backend=(
+                _env(env, "PASS_TUI_KEYRING_BACKEND", "", "dbus") or "dbus"
+            ).lower(),
+            lock_idle_timeout=int(
+                _env(env, "PASS_TUI_LOCK_IDLE_TIMEOUT", "", "600")
+            ),
         )

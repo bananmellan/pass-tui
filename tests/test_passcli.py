@@ -3,7 +3,17 @@ import json
 import pytest
 
 from pass_tui.models import ItemRef, Vault
-from pass_tui.passcli import PassCli, PassCliError, parse_item_view, parse_items, parse_vaults
+from pass_tui.passcli import (
+    SESSION_LOCKED,
+    SESSION_LOGGED_OUT,
+    SESSION_UNLOCKED,
+    PassCli,
+    PassCliError,
+    SessionLockedError,
+    parse_item_view,
+    parse_items,
+    parse_vaults,
+)
 
 
 def make_client(routes):
@@ -594,3 +604,276 @@ def test_totp_uses_pass_uri():
     client = PassCli("pass-cli", runner=runner)
     assert client.totp(ItemRef("s1", "i1", "GitHub")) == "123456"
     assert seen[0][-1] == "pass://s1/i1/totp"
+
+
+def test_is_authenticated_true_when_session_usable():
+    seen = []
+
+    def runner(argv):
+        seen.append(argv)
+        if argv[1] == "info":
+            return "- Release track: stable\n"
+        return '{"vaults": []}'
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.is_authenticated() is True
+    # info alone cannot tell locked from unlocked; vault list confirms.
+    assert seen == [["pass-cli", "info"], ["pass-cli", "vault", "list", "--output", "json"]]
+
+
+def test_is_authenticated_false_when_info_fails():
+    def runner(argv):
+        raise PassCliError("no session, please login")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.is_authenticated() is False
+
+
+def test_is_authenticated_false_when_binary_missing():
+    def runner(argv):
+        raise PassCliError("executable not found: pass-cli")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.is_authenticated() is False
+
+
+def test_is_authenticated_false_when_session_locked():
+    def runner(argv):
+        if argv[1] == "info":
+            return "- Session has lock: yes\n"
+        raise PassCliError("Error: SessionLocked: session is locked")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.is_authenticated() is False
+
+
+def test_session_state_unlocked():
+    def runner(argv):
+        if argv[1] == "info":
+            return "- Username: tester\n"
+        return '{"vaults": []}'
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.session_state() == SESSION_UNLOCKED
+
+
+def test_session_state_locked():
+    def runner(argv):
+        if argv[1] == "info":
+            return "- Session has lock: yes\n"
+        raise PassCliError("Error: SessionLocked: the session is locked")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.session_state() == SESSION_LOCKED
+
+
+def test_session_state_logged_out_when_no_session():
+    def runner(argv):
+        raise PassCliError("no authenticated client, please login")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.session_state() == SESSION_LOGGED_OUT
+
+
+def test_session_state_logged_out_when_api_call_fails_unrelated():
+    """info succeeds but the authenticated call fails for a non-lock
+    reason (e.g. network): treated as logged out, not locked."""
+    def runner(argv):
+        if argv[1] == "info":
+            return "- Username: tester\n"
+        raise PassCliError("connection refused")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.session_state() == SESSION_LOGGED_OUT
+
+
+def test_unlock_session_success():
+    seen = []
+
+    def pty_runner(argv, code):
+        seen.append((argv, code))
+        return "Enter lock code: \nSession unlocked successfully\n", False
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    client.unlock_session("1234")
+    assert seen == [(["pass-cli", "session", "unlock"], "1234")]
+
+
+def test_unlock_session_wrong_code():
+    def pty_runner(argv, code):
+        return "Enter lock code: \nError: SessionLocked: wrong lock code\n", False
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(SessionLockedError):
+        client.unlock_session("0000")
+
+
+def test_unlock_session_timeout():
+    def pty_runner(argv, code):
+        return "Enter lock code: ", True
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(PassCliError):
+        client.unlock_session("1234")
+
+
+def test_unlock_session_empty_code_rejected():
+    def pty_runner(argv, code):
+        raise AssertionError("must not be called")
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(PassCliError):
+        client.unlock_session("")
+
+
+def test_session_has_lock_true():
+    client = make_client({("info", "--output", "json"): '{"session_has_lock": true}'})
+    assert client.session_has_lock() is True
+
+
+def test_session_has_lock_camelcase_and_yes():
+    client = make_client({("info", "--output", "json"): '{"sessionHasLock": "yes"}'})
+    assert client.session_has_lock() is True
+
+
+def test_session_has_lock_false():
+    client = make_client({("info", "--output", "json"): '{"session_has_lock": false}'})
+    assert client.session_has_lock() is False
+
+
+def test_session_has_lock_false_on_failure():
+    def runner(argv):
+        raise PassCliError("no session")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.session_has_lock() is False
+
+
+def test_create_lock_answers_both_prompts():
+    seen = []
+
+    def pty_runner(argv, code):
+        seen.append((argv, code))
+        return "Enter lock code: \nRe-enter lock code: \nSession locked successfully\n", False
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    client.create_lock("1234", 600)
+    assert seen == [(
+        ["pass-cli", "session", "create-lock", "--idle-timeout", "600"], "1234"
+    )]
+
+
+def test_create_lock_failure_raises():
+    def pty_runner(argv, code):
+        return "Enter lock code: \nError: personal access token sessions cannot have a lock\n", False
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(PassCliError, match="cannot have a lock"):
+        client.create_lock("1234", 600)
+
+
+def test_create_lock_timeout():
+    def pty_runner(argv, code):
+        return "Enter lock code: ", True
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(PassCliError, match="timed out"):
+        client.create_lock("1234", 600)
+
+
+def test_unlock_session_generic_failure_reports_last_line():
+    def pty_runner(argv, code):
+        return "Enter lock code: \nsome failure\nError: boom\n", False
+
+    client = PassCli("pass-cli", pty_runner=pty_runner)
+    with pytest.raises(PassCliError, match="boom"):
+        client.unlock_session("1234")
+
+
+def test_login_with_token_passes_token_flag():
+    seen = []
+
+    def runner(argv):
+        seen.append(argv)
+        return ""
+
+    client = PassCli("pass-cli", runner=runner)
+    client.login_with_token("pst_abc::key")
+    assert seen == [["pass-cli", "login", "--personal-access-token", "pst_abc::key"]]
+
+
+def test_login_with_token_propagates_failure():
+    def runner(argv):
+        raise PassCliError("invalid token")
+
+    client = PassCli("pass-cli", runner=runner)
+    with pytest.raises(PassCliError):
+        client.login_with_token("pst_bad")
+
+
+def test_parse_items_captures_safe_fields_and_never_secrets():
+    """--show-secrets listing: non-sensitive values are captured at
+    rebuild time; secret values are never stored on the ItemRef."""
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "vault_id": "v1",
+                "state": "Active",
+                "content": {
+                    "title": "GitHub",
+                    "note": "work account",
+                    "content": {
+                        "Login": {
+                            "email": "",
+                            "username": "me",
+                            "password": "secret",
+                            "urls": ["https://github.com"],
+                            "totp_uri": "otpauth://totp/x",
+                            "passkeys": [],
+                            "autofill_urls": [],
+                        }
+                    },
+                    "extra_fields": [
+                        {"name": "API key", "content": {"Hidden": "hunter2"}},
+                        {"name": "Recovery", "content": {"Text": "abc"}},
+                    ],
+                },
+            }
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert len(items) == 1
+    safe = dict(items[0].safe_fields)
+    assert safe["note"] == "work account"
+    assert safe["username"] == "me"
+    assert safe["url: https://github.com"] == "https://github.com"
+    assert safe["field: Recovery"] == "abc"
+    # Hidden labels kept, values dropped.
+    assert safe["password"] == ""
+    assert safe["field: API key"] == ""
+    assert safe["totp"] == ""
+    blob = json.dumps(items[0].to_dict())
+    assert "secret" not in blob
+    assert "hunter2" not in blob
+    assert "otpauth://totp/x" not in blob
+
+
+def test_parse_items_without_show_secrets_has_empty_safe_fields():
+    """ItemSummary listings (no content) carry no cached fields; the
+    app falls back to a live view when the item is opened."""
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "vault_id": "v1",
+                "state": "Active",
+                "title": "GitHub",
+                "item_type": "login",
+            }
+        ]
+    }
+    items = parse_items(raw, Vault("s1", "Personal"))
+    assert items[0].safe_fields == ()

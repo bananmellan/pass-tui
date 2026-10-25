@@ -18,9 +18,16 @@ class ItemRef:
     vault_name: str = ""
     item_type: str = ""
     item_uuid: str = ""
+    # Non-sensitive copyable fields (label -> value) captured at cache
+    # rebuild time from pass-cli's --show-secrets listing. Only fields
+    # whose values are not secrets (usernames, emails, urls, notes,
+    # Text/Timestamp extra fields, ...) are stored here; secret values
+    # are always fetched live. Absent for entries written by older
+    # cache versions.
+    safe_fields: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "share_id": self.share_id,
             "item_id": self.item_id,
             "title": self.title,
@@ -29,6 +36,9 @@ class ItemRef:
             "item_type": self.item_type,
             "item_uuid": self.item_uuid,
         }
+        if self.safe_fields:
+            data["safe_fields"] = {label: value for label, value in self.safe_fields}
+        return data
 
     @classmethod
     def from_dict(cls, raw) -> "ItemRef":
@@ -45,6 +55,17 @@ class ItemRef:
             if isinstance(urls_raw, list)
             else ()
         )
+        safe_raw = raw.get("safe_fields")
+        safe_fields: tuple[tuple[str, str], ...] = ()
+        if isinstance(safe_raw, dict):
+            # Empty values are kept: they mark hidden fields whose
+            # labels are safe to show but whose values are secrets
+            # (fetched live at copy time).
+            safe_fields = tuple(
+                (str(label), str(value))
+                for label, value in safe_raw.items()
+                if isinstance(label, str) and isinstance(value, str)
+            )
         return cls(
             share_id=share_id,
             item_id=item_id,
@@ -53,4 +74,5 @@ class ItemRef:
             vault_name=str(raw.get("vault_name") or ""),
             item_type=str(raw.get("item_type") or ""),
             item_uuid=str(raw.get("item_uuid") or ""),
+            safe_fields=safe_fields,
         )
