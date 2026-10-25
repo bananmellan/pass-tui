@@ -607,6 +607,7 @@ class Splash:
                 # hidden prompt; treat printable chars as input.
                 if len(key) == 1 and key.isprintable():
                     self._input += key
+                    self._redraw()
                 continue
             if key == 27 or key == 3:  # Esc / Ctrl-c
                 curses.curs_set(0)
@@ -616,9 +617,11 @@ class Splash:
                 return self._input
             if key in (curses.KEY_BACKSPACE, 127, 8):
                 self._input = self._input[:-1]
+                self._redraw()
                 continue
             if 32 <= key < 127:
                 self._input += chr(key)
+                self._redraw()
 
     def _redraw(self) -> None:
         stdscr = self._stdscr
@@ -628,9 +631,12 @@ class Splash:
         _put(stdscr, 1, 0, _truncate(self.status, width - 1), _pair(_PAIR_PROMPT))
         if self._prompt_label:
             _put(stdscr, 3, 0, _truncate(self._prompt_label, width - 1), curses.A_DIM)
-            # The input line shows a cursor only; the input stays hidden.
+            # The input line shows one bullet per typed character; the
+            # input itself stays hidden.
             _put(stdscr, 4, 0, "> ", _pair(_PAIR_PROMPT))
-            stdscr.move(4, 2)
+            bullets = "●" * len(self._input)
+            _put(stdscr, 4, 2, _truncate(bullets, width - 3), _pair(_PAIR_PROMPT))
+            stdscr.move(4, min(2 + len(bullets), width - 1))
         stdscr.refresh()
 
 

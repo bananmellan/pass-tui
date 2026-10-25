@@ -150,6 +150,31 @@ def test_splash_prompt_reads_hidden_input():
     assert "1234" not in win.text()
 
 
+def test_splash_prompt_shows_bullet_per_char():
+    """Each typed character shows as a bullet (●) on the input line;
+    the actual characters are never drawn."""
+    keys = [ord("1"), ord("2"), ord("3"), 10]
+    win = StubWindow(keys=keys)
+    splash = tui.Splash(win)
+    splash.prompt("Lock code: ")
+    # After typing 3 chars, the input line shows 3 bullets.
+    assert win.row(4).startswith("> ●●●")
+    # The actual digits never appear.
+    assert "123" not in win.text()
+
+
+def test_splash_prompt_bullets_update_on_backspace():
+    """Backspace removes a bullet along with the character."""
+    keys = [ord("1"), ord("2"), 127, 10]  # type "12", backspace, enter
+    win = StubWindow(keys=keys)
+    splash = tui.Splash(win)
+    value = splash.prompt("Lock code: ")
+    assert value == "1"
+    # Final state: one bullet remains.
+    assert win.row(4).startswith("> ●")
+    assert "●●" not in win.row(4)
+
+
 def test_splash_prompt_esc_aborts():
     win = StubWindow(keys=[27])
     splash = tui.Splash(win)
