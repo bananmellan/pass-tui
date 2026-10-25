@@ -172,6 +172,34 @@ class App:
         self.state.set_open_item(None)
         return screen
 
+    def _apply_fresh_refs(self, refs: list[ItemRef]) -> Screen:
+        """Update the item list from freshly rebuilt refs without
+        disturbing the current view.
+
+        When the user is on the list, the refs are replaced in place so
+        the search query, selection and scroll offset survive a refresh.
+        When the user is inside an item (field view), the refresh only
+        updates the saved list in the background — the field view stays
+        open.
+        """
+        ordered = sort_refs(refs)
+        screen = self.screen
+        if isinstance(screen, ListScreen):
+            screen.refs = ordered
+            visible = screen.visible
+            if screen.selected >= len(visible):
+                screen.selected = max(0, len(visible) - 1)
+            return screen
+        # Field view: update the saved list so going back shows fresh
+        # items, but keep the field view on screen.
+        saved = self._saved_list
+        if saved is not None:
+            saved.refs = ordered
+            visible = saved.visible
+            if saved.selected >= len(visible):
+                saved.selected = max(0, len(visible) - 1)
+        return screen
+
     def _open_item(self, ref: ItemRef, message: str = "") -> Screen:
         """Open an item's field menu.
 
@@ -368,8 +396,9 @@ class App:
         self._bg_done.clear()
         self._clear_busy()
         if self._bg_result is not None:
+            refs = self._bg_result
             self._bg_result = None
-            return self._refresh_list()
+            return self._apply_fresh_refs(refs)
         return None
 
     # ------------------------------------------------------------ keys
@@ -524,13 +553,17 @@ class App:
         try:
             refs, raw_count = self.cache.rebuild()
             self._log(f"refresh: {len(refs)} unique items from {raw_count} raw entries")
-            return self._refresh_list()
+            return self._apply_fresh_refs(refs)
         except PassCliError as exc:
             self._log(f"refresh failed: {exc}")
-            if isinstance(self.screen, FieldScreen):
-                return self._refresh_list(message=f"Refresh failed: {exc}")
-            screen = self._refresh_list(message=f"Refresh failed: {exc}")
-            return screen
+            screen = self.screen
+            if isinstance(screen, ListScreen):
+                screen.message = f"Refresh failed: {exc}"
+                return screen
+            if isinstance(screen, FieldScreen):
+                screen.message = f"Refresh failed: {exc}"
+                return screen
+            return self._refresh_list(message=f"Refresh failed: {exc}")
         finally:
             self._clear_busy()
 

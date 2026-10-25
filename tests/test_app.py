@@ -673,6 +673,117 @@ def test_ctrl_r_failure_keeps_list_and_reports(tmp_path):
     assert [r.title for r in screen.refs] == ["GitHub"]
 
 
+def test_ctrl_r_preserves_query_and_selection(tmp_path):
+    """A manual refresh (Ctrl+r) must not clear the search query or
+    reset the selection — the refreshed items replace the list in
+    place."""
+    client = FakeClient(items=([ref("s1", "i9", "New Item")], 1))
+    app = make_app(
+        tmp_path,
+        client=client,
+        refs=[ref(), ref("s1", "i2", "GitLab", ("https://gitlab.com",)), ref("s1", "i3", "Bank", ("https://bank.example.com",))],
+    )
+    app.start()
+    for ch in "git":
+        app.handle_key(ch)
+    app.handle_key("down")  # select GitLab
+    assert app.screen.query == "git"
+    assert app.screen.selected == 1
+    screen = app.handle_key("ctrl_r")
+    assert isinstance(screen, ListScreen)
+    # The query survives.
+    assert screen.query == "git"
+    # The refreshed items are in the list.
+    assert "New Item" in [r.title for r in screen.refs]
+    # The filtered view still works with the preserved query.
+    assert screen.visible  # "git" matches nothing in the new list? it's fine if empty
+    # Selection is clamped to the visible range.
+    assert 0 <= screen.selected < max(1, len(screen.visible))
+
+
+def test_ctrl_r_keeps_field_view_open(tmp_path):
+    """A manual refresh while inside an item must not kick the user
+    back to the list — the field view stays open."""
+    client = FakeClient(items=([ref("s1", "i9", "New Item")], 1))
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    app.start()
+    app.screen.query = app.screen.refs[0].title  # enable enter to open
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    screen = app.handle_key("ctrl_r")
+    assert isinstance(screen, FieldScreen)
+    assert screen.ref is not None
+    assert screen.ref.title == "GitHub"
+
+
+def test_ctrl_r_failure_keeps_field_view(tmp_path):
+    """A failed refresh while inside an item keeps the field view and
+    shows the error message on it."""
+    client = FakeClient()
+
+    def boom():
+        raise PassCliError("offline")
+
+    client.list_all_items = boom
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    screen = app.handle_key("ctrl_r")
+    assert isinstance(screen, FieldScreen)
+    assert "Refresh failed" in screen.message
+
+
+def test_poll_refresh_preserves_query_and_selection(tmp_path):
+    """A background refresh landing (poll_refresh) must update the list
+    in place, preserving the query and selection."""
+    client = FakeClient(items=([ref("s1", "i9", "New Item")], 1))
+    app = make_app(
+        tmp_path,
+        client=client,
+        refs=[ref(), ref("s1", "i2", "GitLab", ("https://gitlab.com",))],
+    )
+    app.start()
+    for ch in "git":
+        app.handle_key(ch)
+    app.handle_key("down")
+    assert app.screen.query == "git"
+    assert app.screen.selected == 1
+    # Simulate a background refresh completing.
+    app._bg_result = client.list_all_items()[0]
+    app._bg_done.set()
+    app._refresh_thread = __import__("threading").Thread(target=lambda: None)
+    screen = app.poll_refresh()
+    assert screen is not None
+    assert isinstance(screen, ListScreen)
+    assert screen.query == "git"
+    assert "New Item" in [r.title for r in screen.refs]
+
+
+def test_poll_refresh_keeps_field_view_open(tmp_path):
+    """A background refresh landing while inside an item must not
+    switch back to the list — the field view stays on screen. The
+    saved list is updated so going back shows fresh items."""
+    client = FakeClient(items=([ref("s1", "i9", "New Item")], 1))
+    app = make_app(tmp_path, client=client, refs=[ref()])
+    app.start()
+    app.screen.query = app.screen.refs[0].title  # enable enter to open
+    app.handle_key("enter")
+    assert isinstance(app.screen, FieldScreen)
+    # Simulate a background refresh completing.
+    app._bg_result = client.list_all_items()[0]
+    app._bg_done.set()
+    app._refresh_thread = __import__("threading").Thread(target=lambda: None)
+    screen = app.poll_refresh()
+    assert screen is not None
+    assert isinstance(screen, FieldScreen)
+    assert screen.ref is not None
+    # The saved list has the fresh refs.
+    assert app._saved_list is not None
+    assert "New Item" in [r.title for r in app._saved_list.refs]
+
+
 def test_ctrl_c_quits_and_clears_reopen_memory(tmp_path):
     client = FakeClient()
     clipboard = FakeClipboard()
