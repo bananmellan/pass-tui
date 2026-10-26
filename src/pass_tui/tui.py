@@ -34,8 +34,9 @@ _COL_SEP = "  \u00b7  "
 
 # Terminal cells reserved for the emoji column at the start of each
 # list/field row. Emojis render double-width; the column is always
-# this many cells so titles/kinds line up across rows.
-_EMOJI_COL = 2
+# this many cells (2 for the emoji + 1 space margin) so titles/kinds
+# line up across rows.
+_EMOJI_COL = 3
 
 # Color pairs (initialized in _loop when the terminal supports colors).
 _PAIR_TITLE = 1
@@ -533,7 +534,8 @@ def _draw_fields(stdscr, app: App, field_values: dict[str, str] | None = None) -
             title += f"  \u00b7  {badge}"
     else:
         title = ""
-    _put(stdscr, 0, 0, _truncate(title, width - 1), curses.A_BOLD | _pair(_PAIR_TITLE))
+    _put_centered(stdscr, 0, _truncate(title, width - 1),
+                  curses.A_BOLD | _pair(_PAIR_TITLE))
 
     prompt = f"> {screen.query}"
     prompt_x = _put_centered(stdscr, 1, prompt, _pair(_PAIR_PROMPT))

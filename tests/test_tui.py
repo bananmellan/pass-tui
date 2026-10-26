@@ -583,9 +583,9 @@ def test_draw_list_emoji_column_aligned(tmp_path):
     # Titles start at the same x on both rows (after emoji column).
     row1 = win.row(2)
     row2 = win.row(3)
-    # Find where the title text starts (after emoji + space).
-    # Emoji is 1 char in StubWindow, followed by 1 space (the second
-    # cell of the 2-wide emoji column).
+    # Emoji is 1 char in StubWindow; _EMOJI_COL=3 reserves 3 cells
+    # (2 for the double-width emoji + 1 space margin in a real terminal).
+    # In StubWindow the emoji takes 1 cell, so titles start at x=3.
     assert row1.index("alias@") == row2.index("GitHub")
 
 
@@ -604,7 +604,8 @@ def test_draw_list_no_emoji_for_unknown_type(tmp_path):
     tui._draw_list(win, app)
     row_github = win.row(2)  # title-sorted: GitHub first? No, "GitHub" < "Mystery"
     row_mystery = win.row(3)
-    # Both titles start at the same x (emoji column reserved even when empty).
+    # Both titles start at the same x (emoji column + margin reserved
+    # even when no emoji is shown).
     assert row_github.index("GitHub") == row_mystery.index("Mystery")
 
 
@@ -635,6 +636,24 @@ def test_draw_fields_header_shows_type_badge(tmp_path):
     win = StubWindow()
     tui._draw_fields(win, app)
     assert "actress_revolving098@smail.me  ·  alias" in win.text()
+
+
+def test_draw_fields_centers_title(tmp_path):
+    """The field view title (item name + badge) is centered on row 0."""
+    from pass_tui.models import ItemRef
+
+    refs = [ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login")]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    win = StubWindow(height=24, width=80)
+    tui._draw_fields(win, app)
+    full_row = win.row(0)
+    assert "GitHub" in full_row
+    leading = len(full_row) - len(full_row.lstrip())
+    trailing = len(full_row) - len(full_row.rstrip())
+    assert abs(trailing - leading) <= 3
 
 
 def test_draw_list_shows_host_filter_and_query(tmp_path):
