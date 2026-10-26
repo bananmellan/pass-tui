@@ -21,7 +21,8 @@ from __future__ import annotations
 import curses
 
 from .app import App, FieldScreen, ListScreen, QuitRequested
-from .types import type_badge
+from .fields import HIDDEN_PREVIEW
+from .types import type_badge, type_emoji
 
 MAX_ROWS_FALLBACK = 20
 
@@ -30,6 +31,11 @@ _MAX_URL_COL = 40
 _MAX_VAULT_COL = 20
 _MIN_TITLE_COL = 8
 _COL_SEP = "  \u00b7  "
+
+# Terminal cells reserved for the emoji column at the start of each
+# list/field row. Emojis render double-width; the column is always
+# this many cells so titles/kinds line up across rows.
+_EMOJI_COL = 2
 
 # Color pairs (initialized in _loop when the terminal supports colors).
 _PAIR_TITLE = 1
@@ -307,7 +313,7 @@ def _list_columns(refs: list, width: int) -> tuple[int, int, int, int]:
         if columns > 1:
             fixed += len(_COL_SEP)
         columns += 1
-    title_w = max(_MIN_TITLE_COL, avail - fixed - 1)
+    title_w = max(_MIN_TITLE_COL, avail - fixed - _EMOJI_COL - 1)
     return title_w, badge_w, url_w, vault_w
 
 
@@ -322,7 +328,7 @@ def _draw_list(stdscr, app: App) -> None:
     header = "Proton Pass"
     if screen.host_filter:
         header += f"  ({screen.host_filter})"
-    _put(stdscr, 0, 0, _truncate(header, width - 1), curses.A_BOLD)
+    _put_centered(stdscr, 0, _truncate(header, width - 1), curses.A_BOLD)
 
     prompt = f"> {screen.query}"
     prompt_x = _put_centered(stdscr, 1, prompt, _pair(_PAIR_PROMPT))
@@ -345,6 +351,10 @@ def _draw_list(stdscr, app: App) -> None:
         base = curses.A_REVERSE if selected else curses.A_NORMAL
 
         x = 0
+        emoji = type_emoji(ref.item_type)
+        if emoji:
+            _put(stdscr, y, x, emoji, base)
+        x += _EMOJI_COL
         _put(stdscr, y, x, _truncate(ref.title, title_w).ljust(title_w), base | title_attr)
         x += title_w
         badge = type_badge(ref.item_type)
@@ -407,18 +417,84 @@ def _split_field_label(label: str) -> tuple[str, str]:
     return "field", label
 
 
+# Emoji per field kind for the field view's first column. Sensitive
+# kinds (password, pin, secret, token, hidden, totp, ...) get a lock.
+# All emojis render double-width in terminals.
+_FIELD_EMOJI_KINDS = {
+    "email": "✉️",
+    "url": "🌐",
+    "note": "📝",
+    "totp": "🔐",
+    "username": "👤",
+}
+_FIELD_EMOJI_SENSITIVE = {
+    "password",
+    "passwd",
+    "passphrase",
+    "pin",
+    "secret",
+    "token",
+    "hidden",
+    "totp",
+    "private_key",
+    "api_key",
+    "apikey",
+    "verification_number",
+    "cvv",
+    "cvc",
+    "number",
+    "ssn",
+    "social_security_number",
+    "passport_number",
+    "license_number",
+    "licence_number",
+}
+_FIELD_EMOJI_DEFAULT = "🏷️"
+
+
+def field_emoji(label: str, kind: str, is_hidden: bool = False) -> str:
+    """Emoji for a field row, based on its kind and sensitivity.
+
+    - email -> envelope, url -> globe, note -> memo, totp -> key,
+      username -> bust
+    - sensitive kinds (password, pin, secret, hidden, ...) -> lock
+    - anything else -> label tag
+    """
+    if is_hidden:
+        return "🔒"
+    lowered = kind.lower()
+    if lowered in _FIELD_EMOJI_KINDS:
+        return _FIELD_EMOJI_KINDS[lowered]
+    if lowered in _FIELD_EMOJI_SENSITIVE:
+        return "🔒"
+    # Check the full label for sensitive/kind words (e.g. "username"
+    # label with kind "field", or "field: API key" with kind "field").
+    # Sensitive matches win. Check both the raw label (underscores) and
+    # a space-normalized version so "api_key" and "api key" both match.
+    label_lower = label.lower()
+    label_spaced = label_lower.replace("_", " ")
+    for key in _FIELD_EMOJI_SENSITIVE:
+        if key in label_lower or key.replace("_", " ") in label_spaced:
+            return "🔒"
+    words = label_spaced.replace(":", " ").split()
+    for word in words:
+        if word in _FIELD_EMOJI_KINDS:
+            return _FIELD_EMOJI_KINDS[word]
+    return _FIELD_EMOJI_DEFAULT
+
+
 def _field_columns(labels: list[str], width: int) -> tuple[int, int]:
     """Fixed column widths for the field view: (kind, value).
 
     The kind column is as wide as the widest kind (capped); the value
-    column takes the remaining space.
+    column takes the remaining space after the emoji column.
     """
     avail = max(1, width - 1)
     kind_w = min(
         max((len(_split_field_label(label)[0]) for label in labels), default=0),
         _MAX_KIND_COL,
     )
-    value_w = max(_MIN_TITLE_COL, avail - kind_w - len(_COL_SEP) - 1)
+    value_w = max(_MIN_TITLE_COL, avail - _EMOJI_COL - kind_w - len(_COL_SEP) - 1)
     return kind_w, value_w
 
 
@@ -450,7 +526,11 @@ def _draw_fields(stdscr, app: App, field_values: dict[str, str] | None = None) -
     stdscr.erase()
     if screen.ref is not None:
         badge = type_badge(screen.ref.item_type)
-        title = f"{screen.ref.title}  \u00b7  {badge}" if badge else screen.ref.title
+        item_emoji = type_emoji(screen.ref.item_type)
+        prefix = f"{item_emoji}  " if item_emoji else ""
+        title = f"{prefix}{screen.ref.title}"
+        if badge:
+            title += f"  \u00b7  {badge}"
     else:
         title = ""
     _put(stdscr, 0, 0, _truncate(title, width - 1), curses.A_BOLD | _pair(_PAIR_TITLE))
@@ -474,7 +554,15 @@ def _draw_fields(stdscr, app: App, field_values: dict[str, str] | None = None) -
         base = curses.A_REVERSE if selected else curses.A_NORMAL
 
         kind, name = _split_field_label(label)
+        is_hidden = (
+            field_values is not None
+            and field_values.get(label, "") == HIDDEN_PREVIEW
+        )
+        emoji = field_emoji(label, kind, is_hidden)
         x = 0
+        if emoji:
+            _put(stdscr, y, x, emoji, base)
+        x += _EMOJI_COL
         _put(stdscr, y, x, _truncate(kind, kind_w).ljust(kind_w), base | kind_attr)
         x += kind_w
         _put(stdscr, y, x, _COL_SEP, base | curses.A_DIM)
@@ -643,17 +731,50 @@ class Splash:
         stdscr = self._stdscr
         _height, width = stdscr.getmaxyx()
         stdscr.erase()
-        _put(stdscr, 0, 0, "Proton Pass", curses.A_BOLD)
-        _put(stdscr, 1, 0, _truncate(self.status, width - 1), _pair(_PAIR_PROMPT))
+        _put_centered(stdscr, 0, "Proton Pass", curses.A_BOLD)
+        status_x = _put_centered(stdscr, 1, _truncate(self.status, width - 1),
+                                _pair(_PAIR_PROMPT))
         if self._prompt_label:
-            _put(stdscr, 3, 0, _truncate(self._prompt_label, width - 1), curses.A_DIM)
-            # The input line shows one bullet per typed character; the
-            # input itself stays hidden.
-            _put(stdscr, 4, 0, "> ", _pair(_PAIR_PROMPT))
-            bullets = "●" * len(self._input)
-            _put(stdscr, 4, 2, _truncate(bullets, width - 3), _pair(_PAIR_PROMPT))
-            stdscr.move(4, min(2 + len(bullets), width - 1))
+            self._draw_prompt_box(width)
         stdscr.refresh()
+
+    def _draw_prompt_box(self, width: int) -> None:
+        """Draw the prompt inside a centered ASCII box.
+
+        Layout (3 rows):
+
+            \u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e
+            \u2502 Lock code (input hidden): \u2502
+            \u2502 > \u25cf\u25cf\u25cf\u25cf              \u2502
+            \u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f
+
+        The box width adapts to the label; the whole box is centered
+        horizontally. The typed input is never drawn \u2014 one bullet
+        (\u25cf) per character.
+        """
+        stdscr = self._stdscr
+        label = _truncate(self._prompt_label, width - 6)
+        bullets = "●" * len(self._input)
+        inner_w = max(len(label), 2 + len(bullets)) + 2  # padding
+        box_w = inner_w + 2  # borders
+        avail = width - 1
+        if box_w > avail:
+            box_w = avail
+            inner_w = max(1, box_w - 2)
+        x0 = max(0, (avail - box_w) // 2)
+        top = "╭" + "─" * inner_w + "╮"
+        mid = "│ " + _truncate(label, inner_w - 1).ljust(inner_w - 1) + "│"
+        input_line = "> " + _truncate(bullets, inner_w - 3)
+        bot_mid = "│ " + input_line.ljust(inner_w - 1) + "│"
+        bot = "╰" + "─" * inner_w + "╯"
+        box_attr = _pair(_PAIR_PROMPT)
+        _put(stdscr, 3, x0, _truncate(top, box_w), box_attr)
+        _put(stdscr, 4, x0, _truncate(mid, box_w), curses.A_DIM)
+        _put(stdscr, 5, x0, _truncate(bot_mid, box_w), box_attr)
+        _put(stdscr, 6, x0, _truncate(bot, box_w), box_attr)
+        # Cursor after the bullets on the input row.
+        cursor_x = x0 + 3 + min(len(bullets), inner_w - 3)
+        stdscr.move(5, min(cursor_x, width - 1))
 
 
 def run_splash(stdscr, config, client):

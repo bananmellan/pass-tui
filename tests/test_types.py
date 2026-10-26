@@ -1,6 +1,6 @@
 import pytest
 
-from pass_tui.types import normalize_item_type, type_badge
+from pass_tui.types import normalize_item_type, type_badge, type_emoji
 
 
 @pytest.mark.parametrize(
@@ -51,3 +51,30 @@ def test_alias_is_distinguished_from_login():
     """A hide-my-email alias must not render as a login."""
     assert type_badge("Alias") == "alias"
     assert type_badge("Alias") != type_badge("Login")
+
+
+@pytest.mark.parametrize(
+    "raw,emoji",
+    [
+        ("Login", "🌐"),
+        ("Note", "📝"),
+        ("Alias", "🥷"),
+        ("CreditCard", "💳"),
+        ("credit_card", "💳"),
+        ("Identity", "🪪"),
+        ("SshKey", "🔑"),
+        ("Wifi", "📶"),
+        ("Custom", "📦"),
+        ("", ""),
+        ("unknown", ""),
+    ],
+)
+def test_type_emoji(raw, emoji):
+    assert type_emoji(raw) == emoji
+
+
+def test_type_emoji_alias_is_ninja_login_is_globe():
+    """Aliases get a ninja, logins get a globe."""
+    assert type_emoji("Alias") == "🥷"
+    assert type_emoji("Login") == "🌐"
+    assert type_emoji("Alias") != type_emoji("Login")

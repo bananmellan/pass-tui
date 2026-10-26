@@ -511,16 +511,117 @@ def test_draw_list_shows_type_badges(tmp_path):
     tui._draw_list(win, app)
     text = win.text()
     assert "GitHub" in text and "login" in text
-    assert "actress_revolving098@smail.me" in text and "alias" in text
+    assert "actress_revolving098@smail" in text and "alias" in text
     assert "Bank note" in text and "note" in text
     assert "Visa" in text and "card" in text
     # Unknown/empty type: no badge text on the row.
     no_type_row = next(
-        line for line in text.splitlines() if line.startswith("No type")
+        line for line in text.splitlines() if "No type" in line
     )
     assert "[Personal]" in no_type_row
     for badge in ("login", "alias", "note", "card"):
         assert f"·  {badge}" not in no_type_row
+
+
+def test_draw_list_centers_title(tmp_path):
+    """The "Proton Pass" header is centered on row 0."""
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    win = StubWindow(height=24, width=80)
+    tui._draw_list(win, app)
+    full_row = win.row(0)
+    title = "Proton Pass"
+    idx = full_row.index(title)
+    leading = idx
+    trailing = 80 - (idx + len(title))
+    assert abs(trailing - leading) <= 2
+
+
+def test_draw_list_shows_type_emojis(tmp_path):
+    """Each item type gets an emoji in the first column."""
+    from pass_tui.models import ItemRef
+
+    refs = [
+        ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login"),
+        ItemRef("s1", "i2", "alias@smail.me", (), "Personal", "Alias"),
+        ItemRef("s1", "i3", "Bank note", (), "Personal", "Note"),
+        ItemRef("s1", "i4", "Visa", (), "Personal", "CreditCard"),
+        ItemRef("s1", "i5", "ID card", (), "Personal", "Identity"),
+        ItemRef("s1", "i6", "Server key", (), "Personal", "SshKey"),
+        ItemRef("s1", "i7", "Home wifi", (), "Personal", "Wifi"),
+        ItemRef("s1", "i8", "Misc", (), "Personal", "Custom"),
+    ]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.screen.query = "Personal"
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "\U0001f310" in text  # login -> globe
+    assert "\U0001f977" in text  # alias -> ninja
+    assert "\U0001f4dd" in text  # note -> memo
+    assert "\U0001f4b3" in text  # card -> credit card
+    assert "\U0001faaa" in text  # identity -> ID card
+    assert "\U0001f511" in text  # ssh key -> key
+    assert "\U0001f4f6" in text  # wifi -> signal
+    assert "\U0001f4e6" in text  # custom -> package
+
+
+def test_draw_list_emoji_column_aligned(tmp_path):
+    """The emoji column is fixed-width: titles start at the same x."""
+    from pass_tui.models import ItemRef
+
+    refs = [
+        ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login"),
+        ItemRef("s1", "i2", "alias@smail.me", (), "Personal", "Alias"),
+    ]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.screen.query = "Personal"
+    win = StubWindow()
+    tui._draw_list(win, app)
+    # Titles start at the same x on both rows (after emoji column).
+    row1 = win.row(2)
+    row2 = win.row(3)
+    # Find where the title text starts (after emoji + space).
+    # Emoji is 1 char in StubWindow, followed by 1 space (the second
+    # cell of the 2-wide emoji column).
+    assert row1.index("alias@") == row2.index("GitHub")
+
+
+def test_draw_list_no_emoji_for_unknown_type(tmp_path):
+    """Items with unknown/empty type show no emoji but still align."""
+    from pass_tui.models import ItemRef
+
+    refs = [
+        ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login"),
+        ItemRef("s1", "i2", "Mystery", (), "Personal", ""),
+    ]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.screen.query = "Personal"
+    win = StubWindow()
+    tui._draw_list(win, app)
+    row_github = win.row(2)  # title-sorted: GitHub first? No, "GitHub" < "Mystery"
+    row_mystery = win.row(3)
+    # Both titles start at the same x (emoji column reserved even when empty).
+    assert row_github.index("GitHub") == row_mystery.index("Mystery")
+
+
+def test_draw_fields_shows_field_emojis(tmp_path):
+    """Field rows show emojis: note->memo, password->lock, url->globe,
+    username->bust."""
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    win = StubWindow()
+    tui._draw_fields(win, app, app.field_values())
+    text = win.text()
+    assert "\U0001f4dd" in text  # note -> memo
+    assert "\U0001f512" in text  # password -> lock
+    assert "\U0001f310" in text  # url -> globe
+    assert "\U0001f464" in text  # username -> bust
 
 
 def test_draw_fields_header_shows_type_badge(tmp_path):
@@ -617,6 +718,25 @@ def test_split_field_label():
     assert tui._split_field_label("username") == ("field", "username")
 
 
+def test_field_emoji():
+    """Field emojis: email->envelope, url->globe, sensitive->lock, etc."""
+    assert tui.field_emoji("email: a@b.c", "email") == "\u2709\ufe0f"
+    assert tui.field_emoji("url: https://x", "url") == "\U0001f310"
+    assert tui.field_emoji("note", "note") == "\U0001f4dd"
+    assert tui.field_emoji("totp", "totp") == "\U0001f510"
+    assert tui.field_emoji("username", "field") == "\U0001f464"  # bust from label
+    # Sensitive kinds -> lock
+    assert tui.field_emoji("password", "password") == "\U0001f512"
+    assert tui.field_emoji("field: PIN", "field", is_hidden=True) == "\U0001f512"
+    assert tui.field_emoji("pin", "pin") == "\U0001f512"
+    assert tui.field_emoji("secret", "secret") == "\U0001f512"
+    assert tui.field_emoji("api_key", "api_key") == "\U0001f512"
+    # Custom kind with sensitive word in label -> lock
+    assert tui.field_emoji("field: API key", "field") == "\U0001f512"
+    # Generic -> tag
+    assert tui.field_emoji("Admin: user", "Admin") == "\U0001f3f7\ufe0f"
+
+
 def test_field_columns_fixed_width():
     labels = ["note", "url: https://github.com", "field: API key", "username"]
     kind_w, value_w = tui._field_columns(labels, 80)
@@ -644,23 +764,23 @@ def test_draw_fields_two_columns_with_hints(tmp_path):
     rows = [win.row(2 + i) for i in range(len(app.screen.visible))]
     labels = app.screen.visible
     by_label = dict(zip(labels, rows))
-    # Kind column at x=0, separator at a fixed offset on every row.
-    sep_idx = {row.index(tui._COL_SEP) for row in rows}
-    assert len(sep_idx) == 1
-    # note row: kind "note", name "note", preview "work account".
-    assert by_label["note"].startswith("note")
+    # note row: emoji + kind "note", name "note", preview "work account".
+    assert "note" in by_label["note"]
     assert "work account" in by_label["note"]
     # username is not sensitive: shown in full. password is censored.
-    assert by_label["username"].startswith("field")
+    assert "field" in by_label["username"]
     assert "me" in by_label["username"]
-    assert by_label["password"].startswith("field")
+    assert "field" in by_label["password"]
     assert "secret" not in by_label["password"]
     from pass_tui.fields import HIDDEN_PREVIEW
 
     assert HIDDEN_PREVIEW in by_label["password"]
     # url row: kind "url", name and preview are the url.
-    assert by_label["url: https://github.com"].startswith("url")
+    assert "url" in by_label["url: https://github.com"]
     assert by_label["url: https://github.com"].count("https://github.com") == 2
+    # Emoji column: separator starts at the same x on every row.
+    sep_positions = {row.index(tui._COL_SEP) for row in rows}
+    assert len(sep_positions) == 1
 
 
 def test_draw_fields_without_values_draws_two_columns(tmp_path):
@@ -671,7 +791,7 @@ def test_draw_fields_without_values_draws_two_columns(tmp_path):
     win = StubWindow()
     tui._draw_fields(win, app)  # no field_values: no hint column
     row = win.row(2)
-    assert row.startswith("note")
+    assert "note" in row
     assert "work account" not in row
 
 
@@ -707,7 +827,7 @@ def test_draw_fields_totp_has_no_preview(tmp_path):
         for i, label in enumerate(app.screen.visible)
         if label == "totp"
     )
-    assert totp_row.startswith("totp")
+    assert "totp" in totp_row
     # No masked preview after the value column for totp.
     assert totp_row.count(tui._COL_SEP) == 1
 

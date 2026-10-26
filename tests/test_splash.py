@@ -136,6 +136,65 @@ def test_splash_draws_status_line():
     assert "Checking session" in win.row(1)
 
 
+def test_splash_centers_title():
+    """The "Proton Pass" title is centered on row 0."""
+    win = StubWindow(height=24, width=80)
+    splash = tui.Splash(win)
+    splash.note("Checking session\u2026")
+    full_row = win.row(0)
+    title = "Proton Pass"
+    idx = full_row.index(title)
+    leading = idx
+    trailing = 80 - (idx + len(title))
+    assert abs(trailing - leading) <= 2
+
+
+def test_splash_centers_status():
+    """The status line is centered on row 1."""
+    win = StubWindow(height=24, width=80)
+    splash = tui.Splash(win)
+    splash.note("Checking session\u2026")
+    full_row = win.row(1)
+    status = "Checking session\u2026"
+    idx = full_row.index(status)
+    leading = idx
+    trailing = 80 - (idx + len(status))
+    assert abs(trailing - leading) <= 2
+
+
+def test_splash_prompt_has_ascii_box():
+    """The prompt is drawn inside a centered box with rounded corners."""
+    keys = [10]  # just Enter
+    win = StubWindow(height=24, width=80, keys=keys)
+    splash = tui.Splash(win)
+    splash.prompt("Lock code: ")
+    text = win.text()
+    # Box drawing characters present.
+    assert "\u256d" in text  # top-left corner
+    assert "\u256e" in text  # top-right corner
+    assert "\u2570" in text  # bottom-left corner
+    assert "\u256f" in text  # bottom-right corner
+    assert "\u2502" in text  # vertical bar
+    assert "\u2500" in text  # horizontal bar
+
+
+def test_splash_prompt_box_is_centered():
+    """The prompt box is horizontally centered."""
+    keys = [10]
+    win = StubWindow(height=24, width=80, keys=keys)
+    splash = tui.Splash(win)
+    splash.prompt("Lock code: ")
+    # Find the box top border on row 3.
+    row3 = win.row(3)
+    corner_idx = row3.index("\u256d")
+    # The box should be roughly centered: leading whitespace ~ trailing.
+    leading = corner_idx
+    # Find the right corner.
+    right_idx = row3.index("\u256e")
+    trailing = 80 - (right_idx + 1)
+    assert abs(trailing - leading) <= 2
+
+
 def test_splash_prompt_reads_hidden_input():
     # Type "1234", a backspace, "5", then Enter -> "1235".
     keys = [ord("1"), ord("2"), ord("3"), ord("4"), 127, ord("5"), 10]
@@ -143,9 +202,10 @@ def test_splash_prompt_reads_hidden_input():
     splash = tui.Splash(win)
     value = splash.prompt("Lock code (input hidden): ")
     assert value == "1235"
-    # The label is drawn; the typed characters are never drawn.
-    assert "Lock code" in win.row(3)
-    assert "> " in win.row(4)
+    # The label is drawn inside the box; the typed characters are
+    # never drawn.
+    assert "Lock code" in win.row(4)
+    assert "> " in win.row(5)
     assert "1235" not in win.text()
     assert "1234" not in win.text()
 
@@ -158,7 +218,7 @@ def test_splash_prompt_shows_bullet_per_char():
     splash = tui.Splash(win)
     splash.prompt("Lock code: ")
     # After typing 3 chars, the input line shows 3 bullets.
-    assert win.row(4).startswith("> ●●●")
+    assert "> ●●●" in win.row(5)
     # The actual digits never appear.
     assert "123" not in win.text()
 
@@ -171,8 +231,8 @@ def test_splash_prompt_bullets_update_on_backspace():
     value = splash.prompt("Lock code: ")
     assert value == "1"
     # Final state: one bullet remains.
-    assert win.row(4).startswith("> ●")
-    assert "●●" not in win.row(4)
+    assert "> ●" in win.row(5)
+    assert "●●" not in win.row(5)
 
 
 def test_splash_prompt_esc_aborts():

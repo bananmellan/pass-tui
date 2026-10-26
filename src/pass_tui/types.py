@@ -29,6 +29,21 @@ _TYPE_BADGES = {
     "custom": "custom",
 }
 
+# Canonical type name -> emoji shown in the list's first column.
+# All emojis render as double-width in terminals.
+_TYPE_EMOJIS = {
+    "login": "🌐",
+    "note": "📝",
+    "alias": "🥷",
+    "creditcard": "💳",
+    "credit_card": "💳",
+    "identity": "🪪",
+    "sshkey": "🔑",
+    "ssh_key": "🔑",
+    "wifi": "📶",
+    "custom": "📦",
+}
+
 
 def normalize_item_type(item_type: str) -> str:
     """Map any pass-cli spelling to a canonical lowercase type name."""
@@ -47,3 +62,14 @@ def type_badge(item_type: str) -> str:
     if not canonical:
         return ""
     return _TYPE_BADGES[canonical]
+
+
+def type_emoji(item_type: str) -> str:
+    """Emoji for the item's first list column, e.g. "🥷" for an alias.
+
+    Returns "" for unknown/empty types so the row just shows no emoji.
+    """
+    canonical = normalize_item_type(item_type)
+    if not canonical:
+        return ""
+    return _TYPE_EMOJIS[canonical]
