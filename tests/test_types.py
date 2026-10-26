@@ -78,3 +78,18 @@ def test_type_emoji_alias_is_ninja_login_is_globe():
     assert type_emoji("Alias") == "🥷"
     assert type_emoji("Login") == "🌐"
     assert type_emoji("Alias") != type_emoji("Login")
+
+
+def test_type_emoji_all_wide():
+    """Every type emoji must be a single codepoint with East Asian
+    Width 'W' (double-width) so the fixed _EMOJI_COL=3 column aligns
+    correctly in real terminals."""
+    import unicodedata
+
+    from pass_tui.types import _TYPE_EMOJIS
+
+    for name, emoji in _TYPE_EMOJIS.items():
+        assert len(emoji) == 1, f"{name}: {emoji!r} is multi-codepoint"
+        assert unicodedata.east_asian_width(emoji) == "W", (
+            f"{name}: {emoji!r} is not double-width"
+        )

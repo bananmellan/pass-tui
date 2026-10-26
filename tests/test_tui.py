@@ -737,9 +737,25 @@ def test_split_field_label():
     assert tui._split_field_label("username") == ("field", "username")
 
 
+def test_field_emoji_all_wide():
+    """Every field emoji must be a single codepoint with East Asian
+    Width 'W' (double-width) so the fixed _EMOJI_COL=3 column aligns
+    correctly in real terminals."""
+    import unicodedata
+
+    emojis = set(tui._FIELD_EMOJI_KINDS.values())
+    emojis.add(tui._FIELD_EMOJI_DEFAULT)
+    emojis.add("🔒")  # sensitive fallback
+    for emoji in emojis:
+        assert len(emoji) == 1, f"{emoji!r} is multi-codepoint"
+        assert unicodedata.east_asian_width(emoji) == "W", (
+            f"{emoji!r} is not double-width"
+        )
+
+
 def test_field_emoji():
     """Field emojis: email->envelope, url->globe, sensitive->lock, etc."""
-    assert tui.field_emoji("email: a@b.c", "email") == "\u2709\ufe0f"
+    assert tui.field_emoji("email: a@b.c", "email") == "\U0001f4e7"
     assert tui.field_emoji("url: https://x", "url") == "\U0001f310"
     assert tui.field_emoji("note", "note") == "\U0001f4dd"
     assert tui.field_emoji("totp", "totp") == "\U0001f510"
@@ -753,7 +769,7 @@ def test_field_emoji():
     # Custom kind with sensitive word in label -> lock
     assert tui.field_emoji("field: API key", "field") == "\U0001f512"
     # Generic -> tag
-    assert tui.field_emoji("Admin: user", "Admin") == "\U0001f3f7\ufe0f"
+    assert tui.field_emoji("Admin: user", "Admin") == "\U0001f516"
 
 
 def test_field_columns_fixed_width():

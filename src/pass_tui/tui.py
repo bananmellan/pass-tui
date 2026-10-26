@@ -422,7 +422,7 @@ def _split_field_label(label: str) -> tuple[str, str]:
 # kinds (password, pin, secret, token, hidden, totp, ...) get a lock.
 # All emojis render double-width in terminals.
 _FIELD_EMOJI_KINDS = {
-    "email": "✉️",
+    "email": "📧",
     "url": "🌐",
     "note": "📝",
     "totp": "🔐",
@@ -450,14 +450,14 @@ _FIELD_EMOJI_SENSITIVE = {
     "license_number",
     "licence_number",
 }
-_FIELD_EMOJI_DEFAULT = "🏷️"
+_FIELD_EMOJI_DEFAULT = "🔖"
 
 
 def field_emoji(label: str, kind: str, is_hidden: bool = False) -> str:
     """Emoji for a field row, based on its kind and sensitivity.
 
-    - email -> envelope, url -> globe, note -> memo, totp -> key,
-      username -> bust
+    - email -> e-mail envelope, url -> globe, note -> memo,
+      totp -> key, username -> bust
     - sensitive kinds (password, pin, secret, hidden, ...) -> lock
     - anything else -> label tag
     """
