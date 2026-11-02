@@ -426,9 +426,9 @@ def test_draw_list_shows_items_and_prompt(tmp_path):
     assert "GitHub" in text
     assert "Bank" in text
     assert "https://github.com" in text
-    # Single vault present: the vault moves into the title, no [vault] column.
-    assert "GitHub (Personal)" in text
+    # Single vault present: the vault column is hidden entirely.
     assert "[Personal]" not in text
+    assert "(Personal)" not in text
     assert "2/2 items" in text
     assert win.refreshed == 1
 
@@ -520,9 +520,10 @@ def test_draw_list_shows_type_badges(tmp_path):
     no_type_row = next(
         line for line in text.splitlines() if "No type" in line
     )
-    # Single vault: the vault appears as "(Personal)" in the title,
-    # not as a [vault] column.
-    assert "(Personal)" in no_type_row
+    # Single vault: the vault is hidden entirely — no [vault] column,
+    # no "(Personal)" in the title.
+    assert "[Personal]" not in no_type_row
+    assert "(Personal)" not in no_type_row
     for badge in ("login", "alias", "note", "card"):
         assert f"·  {badge}" not in no_type_row
 
@@ -1462,9 +1463,9 @@ def test_draw_list_shows_folder_column(tmp_path):
     assert "https://" not in row_g
 
 
-def test_draw_list_single_vault_puts_vault_in_title(tmp_path):
-    """Only one vault among all items: no [vault] column; the vault name
-    goes into the title instead."""
+def test_draw_list_single_vault_hides_vault(tmp_path):
+    """Only one vault among all items: the vault is hidden entirely —
+    no [vault] column and no vault name in the titles."""
     refs = [
         ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login", folder="Work/Dev"),
         ItemRef("s1", "i2", "Bank", (), "Personal", "Login", folder="Finance"),
@@ -1475,9 +1476,10 @@ def test_draw_list_single_vault_puts_vault_in_title(tmp_path):
     win = StubWindow()
     tui._draw_list(win, app)
     text = win.text()
-    assert "GitHub (Personal)" in text
-    assert "Bank (Personal)" in text
+    assert "GitHub" in text
+    assert "Bank" in text
     assert "[Personal]" not in text
+    assert "(Personal)" not in text
     # Folder column is independent of the vault mode.
     assert "Work/Dev" in text
     assert "Finance" in text
@@ -1507,8 +1509,8 @@ def test_draw_list_item_without_url_has_no_second_row(tmp_path):
     win = StubWindow()
     tui._draw_list(win, app)
     # No urls anywhere: items occupy exactly one row each, back to back.
-    assert "AAA (Personal)" in win.row(2)
-    assert "BBB (Personal)" in win.row(3)
+    assert "AAA" in win.row(2)
+    assert "BBB" in win.row(3)
     assert "https://" not in win.text()
 
 
@@ -1521,14 +1523,6 @@ def test_draw_list_url_on_second_row_indented(tmp_path):
     tui._draw_list(win, app)
     assert "https://github.com" not in win.row(2)
     assert win.row(3).index("https://github.com") == tui._EMOJI_COL
-
-
-def test_display_title():
-    r = ItemRef("s1", "i1", "GitHub", (), "Personal", "Login")
-    assert tui._display_title(r, single_vault=True) == "GitHub (Personal)"
-    assert tui._display_title(r, single_vault=False) == "GitHub"
-    no_vault = ItemRef("s1", "i1", "GitHub")
-    assert tui._display_title(no_vault, single_vault=True) == "GitHub"
 
 
 def test_list_columns_single_vault_drops_vault_and_caps_folder():

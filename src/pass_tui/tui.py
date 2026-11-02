@@ -17,8 +17,8 @@ Key bindings (in addition to the arrow keys, page up/down, home/end):
 The list renders two rows per item: the first row has the fixed-width
 columns (emoji, title, type badge, folder, vault), the second row (only
 when the item has a url) shows the first url. When only one vault is
-present the vault column is hidden and the vault name moves into the
-title. Columns are colored when the terminal supports colors.
+present the vault column is hidden entirely. Columns are colored when
+the terminal supports colors.
 """
 
 from __future__ import annotations
@@ -295,23 +295,15 @@ def _put_centered(stdscr, y: int, text: str, attr: int) -> int:
     return x
 
 
-def _display_title(ref, single_vault: bool) -> str:
-    """Title shown in the list row. When every item lives in one vault
-    the vault column is hidden and the vault name moves into the title
-    ("GitHub (Personal)") instead."""
-    if single_vault and ref.vault_name:
-        return f"{ref.title} ({ref.vault_name})"
-    return ref.title
-
-
 def _list_columns(refs: list, width: int, single_vault: bool) -> tuple[int, int, int, int]:
     """Fixed column widths for the first list row: (title, badge, folder,
     vault).
 
     Badge/folder/vault columns are as wide as their widest cell (capped);
     the title column takes the remaining space. The vault column is
-    dropped entirely in single-vault mode (the vault is in the title).
-    The url is not a column anymore — it gets a full second row.
+    dropped entirely in single-vault mode — with one vault the name adds
+    no information, so it is simply hidden. The url is not a column
+    anymore — it gets a full second row.
     """
     avail = max(1, width - 1)
     badge_w = max((len(type_badge(r.item_type)) for r in refs), default=0)
@@ -356,8 +348,8 @@ def _draw_list(stdscr, app: App) -> None:
     prompt_x = _put_centered(stdscr, 1, prompt, _pair(_PAIR_PROMPT))
 
     visible = screen.visible
-    # Single-vault mode: when all items live in one vault, hide the vault
-    # column and put the vault name in the title instead.
+    # Single-vault mode: when all items live in one vault, the vault
+    # column is hidden entirely (the name would only repeat on every row).
     vault_names = {r.vault_name for r in screen.refs if r.vault_name}
     single_vault = len(vault_names) <= 1
     title_w, badge_w, folder_w, vault_w = _list_columns(visible, width, single_vault)
@@ -385,8 +377,7 @@ def _draw_list(stdscr, app: App) -> None:
         if emoji:
             _put(stdscr, y, x, emoji, base)
         x += _EMOJI_COL
-        title = _display_title(ref, single_vault)
-        _put(stdscr, y, x, _truncate(title, title_w).ljust(title_w), base | title_attr)
+        _put(stdscr, y, x, _truncate(ref.title, title_w).ljust(title_w), base | title_attr)
         x += title_w
         badge = type_badge(ref.item_type)
         if badge_w:

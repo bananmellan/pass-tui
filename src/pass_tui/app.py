@@ -356,6 +356,9 @@ class App:
             return False
         if opened:
             self._log(f"opened {url!r} in browser")
+            # Arm the same reopen memory a copy arms: the next launch
+            # reopens this item directly.
+            self.state.set_last_copied(screen.ref, timestamp=self._now())
         else:
             self._log(f"no browser available for {url!r}")
         return bool(opened)
@@ -365,10 +368,10 @@ class App:
     def start(self) -> Screen:
         """Initial launch flow.
 
-        1. Reopen-after-copy: if a field was copied within
-           reopen_seconds, open that item directly. The memory is
-           cleared on every start, so it only ever applies to the
-           launch immediately after a copy.
+        1. Reopen after the last action: if a field was copied or a url
+           opened within reopen_seconds, open that item directly. The
+           memory is cleared on every start, so it only ever applies
+           to the launch immediately after the action.
         2. Clipboard URL matching: if the clipboard holds a URL,
            match items from the cache by host. One match opens
            directly; several matches list them best-first with the
@@ -562,7 +565,8 @@ class App:
                 return screen
             if is_url_field(label, field_value(self._item_view, label)):
                 # Url field: open in the browser instead of copying. Like
-                # copying, a successful open ends the program.
+                # copying, a successful open ends the program (and arms
+                # the reopen memory inside _open_label).
                 if self._open_label(label):
                     raise QuitRequested
                 screen.message = "Could not open in browser"

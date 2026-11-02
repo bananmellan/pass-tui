@@ -640,8 +640,40 @@ def test_field_enter_on_url_opens_browser_not_clipboard(tmp_path):
         app.handle_key("enter")
     assert opened == ["https://github.com"]
     assert clipboard.written == []  # urls are opened, not copied
-    # Nothing was copied, so no reopen-after-copy memory is armed.
+    # Like a copy, opening a url arms the reopen memory for the next launch.
+    last = app.state.get_last_copied()
+    assert last is not None and last[0].item_id == "i1"
+
+
+def test_reopen_after_url_open_is_one_shot(tmp_path):
+    """Opening a url in the browser reopens the item on the next launch,
+    exactly like copying a field — and only once."""
+    client = FakeClient()
+    opened = []
+    app = make_app(
+        tmp_path, client=client, refs=[ref()],
+        opener=lambda url: opened.append(url) or True,
+    )
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    _open_url_label(app)
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
+    assert opened == ["https://github.com"]
+    assert app.state.get_last_copied() is not None
+    # First relaunch: reopens the url-opened item.
+    client.view_calls.clear()
+    screen = app.start()
+    assert isinstance(screen, FieldScreen)
+    assert client.view_calls and client.view_calls[0].item_id == "i1"
+    # The reopen memory is consumed.
     assert app.state.get_last_copied() is None
+    # Second relaunch (nothing acted on in between): plain list.
+    client.view_calls.clear()
+    screen = app.start()
+    assert isinstance(screen, ListScreen)
+    assert not client.view_calls
 
 
 def test_field_enter_on_non_url_field_still_copies(tmp_path):
