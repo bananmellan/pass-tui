@@ -831,3 +831,33 @@ def test_cached_view_roundtrip_alias():
     restored = cached_view_from_ref(ref)
     assert field_labels(restored) == field_labels(view)
     assert field_value(restored, "email: me+shopping@proton.me") == "me+shopping@proton.me"
+
+
+def test_is_url_field():
+    from pass_tui.fields import is_url_field
+
+    assert is_url_field("url: https://github.com", "https://github.com")
+    assert is_url_field("url: example.com", "example.com")  # bare host in url label
+    assert is_url_field("field: Website", "https://example.com")  # http value anywhere
+    assert is_url_field("field: Website", "http://x:8080/a")
+    assert not is_url_field("username", "me")
+    assert not is_url_field("email: a@b.c", "a@b.c")
+    assert not is_url_field("note", "see example.com")  # bare domain in text: copy, not open
+    assert not is_url_field("field: x", "pass://s1/i1/totp")
+    assert not is_url_field("totp", "")
+
+
+def test_normalize_url():
+    from pass_tui.fields import normalize_url
+
+    assert normalize_url("https://github.com") == "https://github.com"
+    assert normalize_url("http://x:8080/a?b=c") == "http://x:8080/a?b=c"
+    assert normalize_url("  https://github.com  ") == "https://github.com"
+    assert normalize_url("example.com") == "https://example.com"
+    assert normalize_url("sub.example.com/path") == "https://sub.example.com/path"
+    assert normalize_url("") == ""
+    assert normalize_url("   ") == ""
+    assert normalize_url("pass://s1/i1") == ""  # non-http scheme
+    assert normalize_url("ftp://x") == ""
+    assert normalize_url("a@b.c") == ""  # email, not a host
+    assert normalize_url("two words") == ""

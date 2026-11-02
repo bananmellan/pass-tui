@@ -12,8 +12,10 @@ feeds keystrokes; tests drive the controller directly.
 
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
+import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -27,6 +29,8 @@ from .fields import (
     field_labels,
     field_value,
     hidden_field_labels,
+    is_url_field,
+    normalize_url,
 )
 from .models import ItemRef
 from .passcli import PassCli, PassCliError
@@ -101,6 +105,29 @@ class FieldScreen:
 Screen = ListScreen | FieldScreen
 
 
+def _open_in_browser(url: str) -> bool:
+    """Open url in the default browser.
+
+    webbrowser honors $BROWSER on Linux and the platform default
+    elsewhere; when it finds no browser (headless box, ...) fall back to
+    xdg-open. Returns True when a browser process was launched.
+    """
+    try:
+        if webbrowser.open(url, new=2):
+            return True
+    except webbrowser.Error:
+        pass
+    try:
+        proc = subprocess.Popen(
+            ["xdg-open", url],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    return proc.poll() is None
+
+
 def item_rows(ref: ItemRef) -> int:
     """Screen rows an item occupies in the list: 2 when it has a url
     (title row + url row), otherwise 1. The renderer and the scroll
@@ -118,6 +145,7 @@ class App:
         clipboard: Clipboard,
         now: Callable[[], float] = time.time,
         log: Callable[[str], None] | None = None,
+        opener: Callable[[str], bool] | None = None,
     ) -> None:
         self.config = config
         self.cache = cache
@@ -125,6 +153,9 @@ class App:
         self.client = client
         self.clipboard = clipboard
         self._now = now
+        # Launches a url in the browser (enter on a url field); injectable
+        # for tests.
+        self._opener = opener or _open_in_browser
         self._log = log or (lambda msg: None)
         self.screen: Screen = ListScreen()
         self._item_view: dict = {}
@@ -304,6 +335,30 @@ class App:
             return ""
         self.state.set_last_copied(ref, timestamp=self._now())
         return label
+
+    def _open_label(self, label: str) -> bool:
+        """Open a url field in the browser instead of copying it.
+
+        Url fields never hold secrets, so the value comes straight from
+        the cached view — no live pass-cli fetch. Returns True when a
+        browser was launched.
+        """
+        screen = self.screen
+        if not isinstance(screen, FieldScreen) or screen.ref is None:
+            return False
+        url = normalize_url(field_value(self._item_view, label))
+        if not url:
+            return False
+        try:
+            opened = self._opener(url)
+        except Exception as exc:  # an opener must never crash the TUI
+            self._log(f"browser open failed for {url!r}: {exc}")
+            return False
+        if opened:
+            self._log(f"opened {url!r} in browser")
+        else:
+            self._log(f"no browser available for {url!r}")
+        return bool(opened)
 
     # ------------------------------------------------------------ launch
 
@@ -504,6 +559,13 @@ class App:
         if key == "enter":
             label = screen.selected_label
             if label is None:
+                return screen
+            if is_url_field(label, field_value(self._item_view, label)):
+                # Url field: open in the browser instead of copying. Like
+                # copying, a successful open ends the program.
+                if self._open_label(label):
+                    raise QuitRequested
+                screen.message = "Could not open in browser"
                 return screen
             copied = self._copy_label(label)
             if copied:

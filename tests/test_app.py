@@ -81,7 +81,7 @@ def env(tmp_path):
     return {"PASS_TUI_CACHE_DIR": str(tmp_path / "cache")}
 
 
-def make_app(tmp_path, client=None, clipboard=None, refs=None, config=None, now=None):
+def make_app(tmp_path, client=None, clipboard=None, refs=None, config=None, now=None, opener=None):
     from pass_tui.cache import Cache
     from pass_tui.passcli import PassCli
 
@@ -94,7 +94,7 @@ def make_app(tmp_path, client=None, clipboard=None, refs=None, config=None, now=
     cache = Cache(cache_dir / CACHE_NAME, client, ttl=config.cache_ttl)
     state = StateStore(cache_dir)
     clipboard = clipboard or FakeClipboard()
-    return App(config, cache, state, client, clipboard, now=now or __import__("time").time)
+    return App(config, cache, state, client, clipboard, now=now or __import__("time").time, opener=opener)
 
 
 def test_start_lists_cached_items_sorted(tmp_path):
@@ -614,21 +614,185 @@ def test_field_enter_copies_totp(tmp_path):
     assert client.totp_calls
 
 
-def test_field_enter_copies_url(tmp_path):
+def _open_url_label(app):
+    """Navigate the field view to the first url: label."""
+    labels = app.screen.labels
+    url_label = next(l for l in labels if l.startswith("url: "))
+    for _ in range(labels.index(url_label)):
+        app.handle_key("down")
+    return url_label
+
+
+def test_field_enter_on_url_opens_browser_not_clipboard(tmp_path):
+    """Enter on a url: field opens the url in the browser (and quits,
+    like copy) instead of writing it to the clipboard."""
     clipboard = FakeClipboard()
-    app = make_app(tmp_path, clipboard=clipboard, refs=[ref()])
+    opened = []
+    app = make_app(
+        tmp_path, clipboard=clipboard, refs=[ref()],
+        opener=lambda url: opened.append(url) or True,
+    )
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    _open_url_label(app)
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
+    assert opened == ["https://github.com"]
+    assert clipboard.written == []  # urls are opened, not copied
+    # Nothing was copied, so no reopen-after-copy memory is armed.
+    assert app.state.get_last_copied() is None
+
+
+def test_field_enter_on_non_url_field_still_copies(tmp_path):
+    clipboard = FakeClipboard()
+    opened = []
+    app = make_app(
+        tmp_path, clipboard=clipboard, refs=[ref()],
+        opener=lambda url: opened.append(url) or True,
+    )
     app.start()
     app.screen.query = app.screen.refs[0].title
     app.handle_key("enter")
     labels = app.screen.labels
-    url_label = next(l for l in labels if l.startswith("url: "))
-    idx = labels.index(url_label)
-    for _ in range(idx):
+    for _ in range(labels.index("username")):
         app.handle_key("down")
     with pytest.raises(QuitRequested):
-        app.screen.query = ""  # field screen; query irrelevant to copy
         app.handle_key("enter")
-    assert clipboard.written == ["https://github.com"]
+    assert clipboard.written == ["me"]
+    assert opened == []
+
+
+def test_field_enter_on_url_opener_failure_stays(tmp_path):
+    """When no browser can be launched, the app stays open with a message
+    instead of quitting or copying."""
+    clipboard = FakeClipboard()
+    app = make_app(tmp_path, clipboard=clipboard, refs=[ref()], opener=lambda url: False)
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    _open_url_label(app)
+    screen = app.handle_key("enter")  # must not raise
+    assert isinstance(screen, FieldScreen)
+    assert screen.message == "Could not open in browser"
+    assert clipboard.written == []
+
+
+def test_field_enter_on_url_opener_exception_does_not_crash(tmp_path):
+    def boom(url):
+        raise RuntimeError("no display")
+
+    app = make_app(tmp_path, refs=[ref()], opener=boom)
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    _open_url_label(app)
+    screen = app.handle_key("enter")
+    assert isinstance(screen, FieldScreen)
+    assert screen.message == "Could not open in browser"
+
+
+def test_field_enter_on_schemeless_url_gets_https(tmp_path):
+    """A url: label without a scheme (bare host) is opened as https://."""
+    view = json.dumps(
+        {
+            "item": {
+                "content": {
+                    "title": "GitHub",
+                    "content": {"Login": {"username": "me", "urls": ["github.com"]}},
+                }
+            }
+        }
+    )
+    opened = []
+    app = make_app(
+        tmp_path, client=FakeClient(view=view), refs=[ref()],
+        opener=lambda url: opened.append(url) or True,
+    )
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    _open_url_label(app)
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
+    assert opened == ["https://github.com"]
+
+
+def test_field_enter_on_custom_field_with_http_value_opens(tmp_path):
+    """A non-url label whose value is an http(s) URL also opens in the
+    browser (e.g. a custom 'Website' text field)."""
+    view = json.dumps(
+        {
+            "item": {
+                "content": {
+                    "title": "GitHub",
+                    "content": {"Login": {"username": "me", "urls": []}},
+                }
+            },
+            "extra_fields": [{"name": "Website", "content": {"Text": "https://example.com/docs"}}],
+        }
+    )
+    opened = []
+    clipboard = FakeClipboard()
+    app = make_app(
+        tmp_path, client=FakeClient(view=view), clipboard=clipboard, refs=[ref()],
+        opener=lambda url: opened.append(url) or True,
+    )
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    app.handle_key("enter")
+    labels = app.screen.labels
+    for _ in range(labels.index("field: Website")):
+        app.handle_key("down")
+    with pytest.raises(QuitRequested):
+        app.handle_key("enter")
+    assert opened == ["https://example.com/docs"]
+    assert clipboard.written == []
+
+
+def test_open_in_browser_uses_webbrowser(monkeypatch):
+    import pass_tui.app as app_mod
+
+    calls = []
+    monkeypatch.setattr(
+        app_mod.webbrowser, "open", lambda url, new=2: calls.append((url, new)) or True
+    )
+    assert app_mod._open_in_browser("https://github.com") is True
+    assert calls == [("https://github.com", 2)]
+
+
+def test_open_in_browser_falls_back_to_xdg_open(monkeypatch):
+    import pass_tui.app as app_mod
+
+    monkeypatch.setattr(app_mod.webbrowser, "open", lambda url, new=2: False)
+    launched = []
+
+    class FakeProc:
+        def poll(self):
+            return None
+
+    def fake_popen(argv, **kwargs):
+        launched.append(argv)
+        return FakeProc()
+
+    monkeypatch.setattr(app_mod.subprocess, "Popen", fake_popen)
+    assert app_mod._open_in_browser("https://github.com") is True
+    assert launched == [["xdg-open", "https://github.com"]]
+
+
+def test_open_in_browser_no_browser_returns_false(monkeypatch):
+    import pass_tui.app as app_mod
+
+    def raise_error(url, new=2):
+        raise app_mod.webbrowser.Error("no browser")
+
+    monkeypatch.setattr(app_mod.webbrowser, "open", raise_error)
+
+    def no_xdg(argv, **kwargs):
+        raise OSError("not found")
+
+    monkeypatch.setattr(app_mod.subprocess, "Popen", no_xdg)
+    assert app_mod._open_in_browser("https://github.com") is False
 
 
 def test_field_navigation_and_filter(tmp_path):

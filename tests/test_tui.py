@@ -949,7 +949,7 @@ def test_draw_scrolls_when_selection_moves_past_view(tmp_path):
 # ------------------------------------------------------------ pty smoke
 
 
-def _run_in_pty(tmp_path, script, refs, seed_query=None):
+def _run_in_pty(tmp_path, script, refs, seed_query=None, fake_browser=False):
     """Run the real curses UI in a pty; `script` is a list of keystrokes
     (bytes) sent with small delays. Returns the app after the loop ends."""
     cache_dir = tmp_path / "cache"
@@ -963,6 +963,10 @@ def _run_in_pty(tmp_path, script, refs, seed_query=None):
     env["COLUMNS"] = "80"
     if seed_query is not None:
         env["PASS_TUI_SEED_QUERY"] = seed_query
+    if fake_browser:
+        # The child wires a fake browser opener that records urls to
+        # cache_dir/browser.txt instead of launching a real browser.
+        env["PASS_TUI_FAKE_BROWSER"] = "1"
 
     argv = [sys.executable, "-c", _PTY_CHILD]
     master, slave = pty.openpty()
@@ -1027,7 +1031,15 @@ class Clip:
     def write(self, value):
         Path(cache_dir / "copied.txt").write_text(value)
 
-app = App(config, cache, state, C(), Clip())
+def fake_opener(url):
+    with open(cache_dir / "browser.txt", "a") as fh:
+        fh.write(url + chr(10))
+    return True
+
+if __import__("os").environ.get("PASS_TUI_FAKE_BROWSER"):
+    app = App(config, cache, state, C(), Clip(), opener=fake_opener)
+else:
+    app = App(config, cache, state, C(), Clip())
 if __import__("os").environ.get("PASS_TUI_SEED_QUERY"):
     app.start()
     app.screen.query = __import__("os").environ["PASS_TUI_SEED_QUERY"]
@@ -1121,6 +1133,23 @@ def test_pty_copy_quits_program(tmp_path):
     copied = (tmp_path / "cache" / "copied.txt").read_text()
     # First copyable field of the Login view is the username.
     assert copied == "me"
+
+
+def test_pty_enter_on_url_field_opens_browser(tmp_path):
+    """Enter on a url: field opens it in the browser (and quits, like a
+    copy) instead of writing it to the clipboard."""
+    # Field labels of the Login view: username, password, url: ...
+    rc = _run_in_pty(
+        tmp_path,
+        [b"\r", b"\x1b[B", b"\x1b[B", b"\r"],
+        [ref()],
+        seed_query="GitHub",
+        fake_browser=True,
+    )
+    assert rc == 0
+    browser = (tmp_path / "cache" / "browser.txt").read_text().split()
+    assert browser == ["https://github.com"]
+    assert not (tmp_path / "cache" / "copied.txt").exists()
 
 
 def test_pty_ctrl_n_moves_down(tmp_path):

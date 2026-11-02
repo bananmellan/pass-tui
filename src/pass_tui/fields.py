@@ -450,6 +450,33 @@ def hidden_field_labels(data: dict) -> set[str]:
     return {label for label, _value, hidden in _label_value_pairs(data) if hidden}
 
 
+def is_url_field(label: str, value: str) -> bool:
+    """True when a field should be opened in a browser instead of copied:
+    the canonical ``url: <url>`` labels, or any field whose value is an
+    http(s) URL (e.g. a custom "Website" field holding a link)."""
+    if label.startswith("url: "):
+        return True
+    return value.startswith(("http://", "https://"))
+
+
+def normalize_url(value: str) -> str:
+    """Normalize a field value to a browser-openable URL.
+
+    http(s) URLs pass through unchanged; a bare host (a ``url:`` label
+    without a scheme) gets ``https://`` prepended. Anything else — empty,
+    other schemes (``pass://``, ``ftp://``), emails, text with spaces —
+    returns "" so the caller falls back to copying.
+    """
+    value = value.strip()
+    if not value:
+        return ""
+    if value.startswith(("http://", "https://")):
+        return value
+    if "://" in value or "@" in value or " " in value:
+        return ""
+    return "https://" + value
+
+
 def field_value(data: dict, label: str, totp: str = "") -> str:
     """Resolve a label from :func:`field_labels` to its copyable value.
 

@@ -11,6 +11,8 @@ Key bindings (in addition to the arrow keys, page up/down, home/end):
 - back/quit: ``Esc`` or ``Ctrl+l``
 - up/down: arrow keys, ``Ctrl+p`` / ``Ctrl+n`` (emacs style)
 - refresh: ``Ctrl+r``; quit: ``Ctrl+c``
+- in the field view, enter on a ``url:`` field opens it in the browser
+  instead of copying it to the clipboard
 
 The list renders two rows per item: the first row has the fixed-width
 columns (emoji, title, type badge, folder, vault), the second row (only
@@ -617,7 +619,7 @@ def _draw_fields(stdscr, app: App, field_values: dict[str, str] | None = None) -
     status = f"{len(visible)} fields"
     if screen.message:
         status = f"{screen.message}  \u2014  {status}"
-    status += "  \u00b7  enter: copy  esc/ctrl-l: back"
+    status += "  \u00b7  enter: copy/open  esc/ctrl-l: back"
     _put(stdscr, height - 1, 0, _truncate(status, width - 1), curses.A_DIM)
     if app.busy:
         _put(stdscr, 0, max(0, width - len(app.busy) - 1), app.busy,
