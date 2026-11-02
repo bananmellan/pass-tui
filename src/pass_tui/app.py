@@ -101,6 +101,13 @@ class FieldScreen:
 Screen = ListScreen | FieldScreen
 
 
+def item_rows(ref: ItemRef) -> int:
+    """Screen rows an item occupies in the list: 2 when it has a url
+    (title row + url row), otherwise 1. The renderer and the scroll
+    clamp must agree on this so the selected item stays visible."""
+    return 2 if ref.urls else 1
+
+
 class App:
     def __init__(
         self,
@@ -425,11 +432,23 @@ class App:
             screen.selected = max(0, len(visible) - 1)
         if screen.selected < 0:
             screen.selected = 0
-        if height > 0:
+        if height <= 0:
+            return
+        if isinstance(screen, ListScreen):
+            # Items take 1 or 2 rows (url row), so the offset is item-
+            # based but the scroll math is row-based.
             if screen.selected < screen.offset:
                 screen.offset = screen.selected
-            elif screen.selected >= screen.offset + height:
-                screen.offset = screen.selected - height + 1
+                return
+            row = sum(item_rows(visible[i]) for i in range(screen.offset, screen.selected))
+            while row >= height and screen.offset < screen.selected:
+                row -= item_rows(visible[screen.offset])
+                screen.offset += 1
+            return
+        if screen.selected < screen.offset:
+            screen.offset = screen.selected
+        elif screen.selected >= screen.offset + height:
+            screen.offset = screen.selected - height + 1
 
     def _handle_list_key(self, key: str) -> Screen:
         screen = self.screen

@@ -1315,3 +1315,61 @@ def test_refresh_async_skipped_while_one_is_running(tmp_path):
     assert app._refresh_thread is not None and app._refresh_thread is not first
     client._gate.set()
     _wait_bg(app)
+
+
+# ------------------------------------------------- row-aware list clamp
+
+
+def test_clamp_list_scrolls_by_rows_not_items(tmp_path):
+    """Items with urls take 2 rows, so the offset must advance further
+    than one item per screen row when scrolling down."""
+    from pass_tui.app import item_rows
+
+    refs = [ref("s1", f"i{n}", f"Item {n:02d}", ("https://x.example.com",)) for n in range(10)]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    screen = app.screen
+    assert isinstance(screen, ListScreen)
+    screen.query = "Item"
+    screen.selected = 9
+    app._clamp(screen, 4)  # 4 screen rows = 2 two-row items
+    # Selected item 9's first row must fit: rows before it < height.
+    rows_before = sum(item_rows(r) for r in screen.visible[screen.offset : screen.selected])
+    assert rows_before < 4
+    assert screen.offset == 8  # items 8 and 9 fill the 4 rows
+
+
+def test_clamp_list_mixed_url_and_plain_rows(tmp_path):
+    from pass_tui.app import item_rows
+
+    refs = []
+    for n in range(10):
+        urls = ("https://x.example.com",) if n % 2 == 0 else ()
+        refs.append(ref("s1", f"i{n}", f"Item {n:02d}", urls))
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    screen = app.screen
+    assert isinstance(screen, ListScreen)
+    screen.query = "Item"
+    screen.selected = 9
+    app._clamp(screen, 4)
+    visible = screen.visible
+    rows_before = sum(item_rows(r) for r in visible[screen.offset : screen.selected])
+    assert rows_before < 4
+    assert screen.offset == 7
+    # Scrolling back above the offset resets the offset to the selection.
+    screen.selected = 0
+    app._clamp(screen, 4)
+    assert screen.offset == 0
+
+
+def test_clamp_list_field_screen_unchanged(tmp_path):
+    """FieldScreen rows are still 1 row each."""
+    app = make_app(tmp_path, refs=[ref()])
+    app.start()
+    app.screen.query = app.screen.refs[0].title
+    screen = app.handle_key("enter")
+    assert isinstance(screen, FieldScreen)
+    screen.selected = len(screen.visible) - 1
+    app._clamp(screen, 2)
+    assert screen.offset == screen.selected - 1

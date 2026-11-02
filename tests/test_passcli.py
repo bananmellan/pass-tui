@@ -10,6 +10,8 @@ from pass_tui.passcli import (
     PassCli,
     PassCliError,
     SessionLockedError,
+    _folder_paths,
+    parse_folders,
     parse_item_view,
     parse_items,
     parse_vaults,
@@ -877,3 +879,152 @@ def test_parse_items_without_show_secrets_has_empty_safe_fields():
     }
     items = parse_items(raw, Vault("s1", "Personal"))
     assert items[0].safe_fields == ()
+
+
+# ------------------------------------------------------------ folders
+
+FOLDERS_S1 = json.dumps(
+    [
+        {"id": "f-root", "share_id": "s1", "parent_folder_id": None, "content": {"name": "Work"}},
+        {"id": "f-child", "share_id": "s1", "parent_folder_id": "f-root", "content": {"name": "Dev"}},
+        {"id": "f-lonely", "share_id": "s1", "parent_folder_id": "f-missing", "content": {"name": "Orphan"}},
+    ]
+)
+
+
+def test_parse_folders_reads_folder_list_shape():
+    folders = parse_folders(json.loads(FOLDERS_S1))
+    assert folders == {
+        "f-root": ("Work", ""),
+        "f-child": ("Dev", "f-root"),
+        "f-lonely": ("Orphan", "f-missing"),
+    }
+
+
+def test_parse_folders_tolerates_wrapper_and_bare_name():
+    assert parse_folders({"folders": [{"id": "f1", "name": "Flat"}]}) == {"f1": ("Flat", "")}
+    assert parse_folders([]) == {}
+
+
+def test_folder_paths_builds_parent_child():
+    paths = _folder_paths(parse_folders(json.loads(FOLDERS_S1)))
+    assert paths["f-root"] == "Work"
+    assert paths["f-child"] == "Work/Dev"
+    # Parent id unknown to the map: just the folder's own name.
+    assert paths["f-lonely"] == "Orphan"
+
+
+def test_folder_paths_cycle_safe():
+    paths = _folder_paths({"a": ("A", "b"), "b": ("B", "a")})
+    # Must terminate; the cycle yields the deepest resolvable chain.
+    assert paths == {"a": "B/A", "b": "A/B"}
+
+
+def test_parse_items_resolves_folder_id_to_path():
+    raw = {
+        "items": [
+            {
+                "id": "i1",
+                "share_id": "s1",
+                "folder_id": "f-child",
+                "content": {"title": "GitHub", "content": {"Login": {"urls": ["https://github.com"]}}},
+            },
+            {
+                "id": "i2",
+                "share_id": "s1",
+                "folder_id": "f-gone",
+                "content": {"title": "Bank", "content": {"Login": {}}},
+            },
+            {
+                "id": "i3",
+                "share_id": "s1",
+                "folder_id": None,
+                "content": {"title": "Loose", "content": {"Note": {}}},
+            },
+        ]
+    }
+    paths = _folder_paths(parse_folders(json.loads(FOLDERS_S1)))
+    items = parse_items(raw, Vault("s1", "Personal"), paths)
+    by_id = {i.item_id: i for i in items}
+    assert by_id["i1"].folder == "Work/Dev"
+    assert by_id["i2"].folder == ""  # unknown folder id -> no folder shown
+    assert by_id["i3"].folder == ""  # null folder_id -> no folder
+
+
+def test_parse_items_without_folder_map_leaves_folder_empty():
+    items = parse_items(json.loads(ITEMS_S1), Vault("s1", "Personal"))
+    assert all(i.folder == "" for i in items)
+
+
+def test_list_folders_calls_folder_list_command():
+    seen = []
+
+    def runner(argv):
+        seen.append(argv)
+        if argv[1:4] == ["folder", "list", "--share-id"]:
+            return FOLDERS_S1
+        raise PassCliError(f"unexpected {argv}")
+
+    client = PassCli("pass-cli", runner=runner)
+    paths = client.list_folders(Vault("s1", "Personal"))
+    assert seen[0] == ["pass-cli", "folder", "list", "--share-id", "s1", "--output", "json"]
+    assert paths["f-child"] == "Work/Dev"
+
+
+def test_list_folders_falls_back_to_empty_on_error():
+    """Older pass-cli builds without `folder list` fail the call; items
+    then simply show no folder."""
+
+    def runner(argv):
+        raise PassCliError("unknown command: folder")
+
+    client = PassCli("pass-cli", runner=runner)
+    assert client.list_folders(Vault("s1", "Personal")) == {}
+
+
+def test_list_items_resolves_folders_end_to_end():
+    items_json = json.dumps(
+        {
+            "items": [
+                {
+                    "id": "i1",
+                    "share_id": "s1",
+                    "folder_id": "f-child",
+                    "content": {"title": "GitHub", "content": {"Login": {"urls": ["https://github.com"]}}},
+                }
+            ]
+        }
+    )
+    client = make_client(
+        {
+            ("item", "list", "--share-id", "s1", "--output", "json", "--show-secrets"): items_json,
+            ("folder", "list", "--share-id", "s1", "--output", "json"): FOLDERS_S1,
+        }
+    )
+    items = client.list_items(Vault("s1", "Personal"))
+    assert items[0].folder == "Work/Dev"
+
+
+def test_list_items_tolerates_missing_folder_command():
+    # No folder route registered: make_client raises PassCliError for the
+    # unknown call and list_items must still return the items.
+    items_json = json.dumps(
+        {
+            "items": [
+                {
+                    "id": "i1",
+                    "share_id": "s1",
+                    "folder_id": "f-child",
+                    "content": {"title": "GitHub", "content": {"Login": {"urls": ["https://github.com"]}}},
+                }
+            ]
+        }
+    )
+    client = make_client(
+        {
+            ("item", "list", "--share-id", "s1", "--output", "json", "--show-secrets"): items_json,
+        }
+    )
+    items = client.list_items(Vault("s1", "Personal"))
+    assert items[0].title == "GitHub"
+    assert items[0].folder == ""

@@ -426,7 +426,9 @@ def test_draw_list_shows_items_and_prompt(tmp_path):
     assert "GitHub" in text
     assert "Bank" in text
     assert "https://github.com" in text
-    assert "[Personal]" in text
+    # Single vault present: the vault moves into the title, no [vault] column.
+    assert "GitHub (Personal)" in text
+    assert "[Personal]" not in text
     assert "2/2 items" in text
     assert win.refreshed == 1
 
@@ -518,7 +520,9 @@ def test_draw_list_shows_type_badges(tmp_path):
     no_type_row = next(
         line for line in text.splitlines() if "No type" in line
     )
-    assert "[Personal]" in no_type_row
+    # Single vault: the vault appears as "(Personal)" in the title,
+    # not as a [vault] column.
+    assert "(Personal)" in no_type_row
     for badge in ("login", "alias", "note", "card"):
         assert f"·  {badge}" not in no_type_row
 
@@ -602,8 +606,10 @@ def test_draw_list_no_emoji_for_unknown_type(tmp_path):
     app.screen.query = "Personal"
     win = StubWindow()
     tui._draw_list(win, app)
-    row_github = win.row(2)  # title-sorted: GitHub first? No, "GitHub" < "Mystery"
-    row_mystery = win.row(3)
+    # "GitHub" < "Mystery" (title-sorted): GitHub row 1 at y=2, its url
+    # on y=3, Mystery (no urls, 1 row) at y=4.
+    row_github = win.row(2)
+    row_mystery = win.row(4)
     # Both titles start at the same x (emoji column + margin reserved
     # even when no emoji is shown).
     assert row_github.index("GitHub") == row_mystery.index("Mystery")
@@ -686,11 +692,15 @@ def test_draw_list_marks_selected_row(tmp_path):
     app.handle_key("down")
     win = StubWindow()
     tui._draw_list(win, app)
-    # The selected row (Bank, second row at y=3) uses A_REVERSE.
+    # Both items have urls, so each takes 2 rows: GitHub at y=2 (+url y=3),
+    # Bank at y=4 (+url y=5). Bank is selected: its rows use A_REVERSE.
     import curses
 
-    assert win.cells[(3, 0)][1] == curses.A_REVERSE
+    assert win.cells[(4, 0)][1] == curses.A_REVERSE
     assert win.cells[(2, 0)][1] == curses.A_NORMAL
+    # The selected item's url row is reversed as well.
+    assert win.cells[(5, tui._EMOJI_COL)][1] == curses.A_REVERSE
+    assert win.cells[(3, tui._EMOJI_COL)][1] == curses.A_NORMAL
 
 
 def test_draw_list_fixed_width_columns(tmp_path):
@@ -703,13 +713,17 @@ def test_draw_list_fixed_width_columns(tmp_path):
     app.screen.query = "login"  # empty prompt shows no results
     win = StubWindow()
     tui._draw_list(win, app)
-    # Title-sorted: "B" is the first row, "GitHub" the second.
+    # Title-sorted: "B" is the first item, "GitHub" the second. Both have
+    # urls, so each takes 2 rows: B at y=2 (+url y=3), GitHub at y=4 (+url y=5).
     row_b = win.row(2)
-    row_g = win.row(3)
-    # Badge and url columns start at the same offset on every row.
+    row_b_url = win.row(3)
+    row_g = win.row(4)
+    row_g_url = win.row(5)
+    # Badge columns start at the same offset on every first row.
     assert row_b.index("login") == row_g.index("login")
-    assert row_b.index("https://") == row_g.index("https://")
-    # The vault column is right-aligned: both rows end at the same edge.
+    # Urls live on the second row of each item, aligned at the emoji column.
+    assert row_b_url.index("https://") == row_g_url.index("https://") == tui._EMOJI_COL
+    # Two vaults present: the vault column is right-aligned at the edge.
     assert row_b.rstrip().endswith("[Work]")
     assert row_g.rstrip().endswith("[Personal]")
     assert len(row_b.rstrip()) == len(row_g.rstrip())
@@ -1383,3 +1397,138 @@ def test_loop_redraws_when_refresh_lands():
     # Third: script exhausted.
     assert app.keys == ["a"]
     assert app.polls >= 2
+
+
+# ------------------------------------------------- two-row item layout
+
+
+def test_draw_list_shows_folder_column(tmp_path):
+    """First row: emoji, title, badge, folder, [vault]. Url moves to the
+    item's second row."""
+    refs = [
+        ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login", folder="Work/Dev"),
+        ItemRef("s1", "i2", "Bank", ("https://bank.example.com",), "Work", "Login", folder="Finance"),
+    ]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.screen.query = "login"
+    win = StubWindow()
+    tui._draw_list(win, app)
+    # Title-sorted: Bank first (first row y=2, url y=3), GitHub second
+    # (first row y=4, url y=5).
+    row_b = win.row(2)
+    row_g = win.row(4)
+    assert "Finance" in row_b
+    assert "Work/Dev" in row_g
+    # Folder column starts at the same x on every first row.
+    assert row_b.index("Finance") == row_g.index("Work/Dev")
+    # Two vaults present: the vault column is still shown.
+    assert row_b.rstrip().endswith("[Work]")
+    assert row_g.rstrip().endswith("[Personal]")
+    # Urls are on the second row of each item, at the emoji column.
+    assert win.row(3).index("https://bank.example.com") == tui._EMOJI_COL
+    assert win.row(5).index("https://github.com") == tui._EMOJI_COL
+    # ...and not on the first row.
+    assert "https://" not in row_b
+    assert "https://" not in row_g
+
+
+def test_draw_list_single_vault_puts_vault_in_title(tmp_path):
+    """Only one vault among all items: no [vault] column; the vault name
+    goes into the title instead."""
+    refs = [
+        ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login", folder="Work/Dev"),
+        ItemRef("s1", "i2", "Bank", (), "Personal", "Login", folder="Finance"),
+    ]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.screen.query = "login"
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "GitHub (Personal)" in text
+    assert "Bank (Personal)" in text
+    assert "[Personal]" not in text
+    # Folder column is independent of the vault mode.
+    assert "Work/Dev" in text
+    assert "Finance" in text
+
+
+def test_draw_list_multi_vault_keeps_vault_column(tmp_path):
+    refs = [
+        ref("s1", "i1", "GitHub", ("https://github.com",), "Personal"),
+        ref("s2", "i2", "Bank", ("https://bank.example.com",), "Work"),
+    ]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.screen.query = "login"
+    win = StubWindow()
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "[Personal]" in text
+    assert "[Work]" in text
+    assert "GitHub (Personal)" not in text  # vault stays in its column
+
+
+def test_draw_list_item_without_url_has_no_second_row(tmp_path):
+    refs = [ref("s1", "i1", "AAA", ()), ref("s1", "i2", "BBB", ())]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.screen.query = "login"
+    win = StubWindow()
+    tui._draw_list(win, app)
+    # No urls anywhere: items occupy exactly one row each, back to back.
+    assert "AAA (Personal)" in win.row(2)
+    assert "BBB (Personal)" in win.row(3)
+    assert "https://" not in win.text()
+
+
+def test_draw_list_url_on_second_row_indented(tmp_path):
+    refs = [ref("s1", "i1", "GitHub", ("https://github.com",))]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.screen.query = "GitHub"
+    win = StubWindow()
+    tui._draw_list(win, app)
+    assert "https://github.com" not in win.row(2)
+    assert win.row(3).index("https://github.com") == tui._EMOJI_COL
+
+
+def test_display_title():
+    r = ItemRef("s1", "i1", "GitHub", (), "Personal", "Login")
+    assert tui._display_title(r, single_vault=True) == "GitHub (Personal)"
+    assert tui._display_title(r, single_vault=False) == "GitHub"
+    no_vault = ItemRef("s1", "i1", "GitHub")
+    assert tui._display_title(no_vault, single_vault=True) == "GitHub"
+
+
+def test_list_columns_single_vault_drops_vault_and_caps_folder():
+    refs = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",), "Personal")]
+    _title_w, badge_w, folder_w, vault_w = tui._list_columns(refs, 80, single_vault=True)
+    assert vault_w == 0
+    assert badge_w == len("login")
+    assert folder_w == 0
+    # Multi-vault keeps the vault column.
+    refs2 = [ref(), ref("s1", "i2", "Bank", ("https://bank.example.com",), "Work")]
+    _t, _b, _f, vault_w2 = tui._list_columns(refs2, 80, single_vault=False)
+    assert vault_w2 == len("[Personal]")
+    # Folder column is capped.
+    long_folder = [ItemRef("s1", "i1", "GitHub", (), "Personal", "Login", folder="X" * 100)]
+    _t, _b, folder_w3, _v = tui._list_columns(long_folder, 80, single_vault=True)
+    assert folder_w3 == tui._MAX_FOLDER_COL
+
+
+def test_draw_scrolls_with_two_row_items(tmp_path):
+    """Scrolling accounts for the extra url row: with 2-row items only
+    half as many items fit in the same screen height."""
+    refs = [ref("s1", f"i{n}", f"Item {n:02d}", ("https://x.example.com",)) for n in range(30)]
+    app = make_app(tmp_path, refs=refs)
+    app.start()
+    app.screen.query = "Item"
+    for _ in range(25):
+        app.handle_key("down")
+    win = StubWindow(height=10, width=80)  # list_height = 7 rows
+    tui._draw_list(win, app)
+    text = win.text()
+    assert "Item 25" in text
+    assert app.screen.offset > 0

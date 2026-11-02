@@ -110,7 +110,7 @@ def test_load_cache_dedups_stale_file(tmp_path):
     deduped on load so the list never shows the same item twice."""
     path = tmp_path / CACHE_NAME
     payload = {
-        "version": 2,
+        "version": 3,
         "created_at": 0,
         "items": [
             ref("s1", "i1", "GitHub", ("https://github.com",)).to_dict(),
@@ -175,7 +175,7 @@ def test_load_cache_dedups_by_item_uuid(tmp_path):
     (pass-cli handed out a new item_id for the same item) collapse to one."""
     path = tmp_path / CACHE_NAME
     payload = {
-        "version": 2,
+        "version": 3,
         "created_at": 0,
         "items": [
             {
@@ -218,7 +218,7 @@ def test_cache_allows_item_uuid_key(tmp_path):
     path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "items": [
                     {
                         "share_id": "s1",
@@ -243,7 +243,7 @@ def test_load_rejects_foreign_keys(tmp_path):
     path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "items": [
                     {
                         "share_id": "s1",
@@ -461,7 +461,7 @@ def test_load_cache_tolerates_entry_without_safe_fields(tmp_path):
     inside the current version) load with empty safe_fields."""
     path = tmp_path / CACHE_NAME
     payload = {
-        "version": 2,
+        "version": 3,
         "created_at": 0,
         "items": [
             {
@@ -478,3 +478,63 @@ def test_load_cache_tolerates_entry_without_safe_fields(tmp_path):
     path.write_text(json.dumps(payload))
     loaded = load_cache(path)
     assert loaded[0].safe_fields == ()
+
+
+def test_cache_roundtrips_folder(tmp_path):
+    path = tmp_path / CACHE_NAME
+    dump_cache(
+        [ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login", folder="Work/Dev")],
+        path,
+    )
+    refs = load_cache(path)
+    assert refs[0].folder == "Work/Dev"
+
+
+def test_load_cache_keeps_folder_key(tmp_path):
+    path = tmp_path / CACHE_NAME
+    path.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "items": [
+                    {
+                        "share_id": "s1",
+                        "item_id": "i1",
+                        "title": "GitHub",
+                        "urls": [],
+                        "vault_name": "Personal",
+                        "item_type": "Login",
+                        "folder": "Work/Dev",
+                    }
+                ],
+            }
+        )
+    )
+    refs = load_cache(path)
+    assert len(refs) == 1
+    assert refs[0].folder == "Work/Dev"
+
+
+def test_load_cache_defaults_folder_to_empty(tmp_path):
+    """Cache entries written before folder support (v3 without the key,
+    e.g. hand-edited) load with an empty folder."""
+    path = tmp_path / CACHE_NAME
+    path.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "items": [
+                    {
+                        "share_id": "s1",
+                        "item_id": "i1",
+                        "title": "GitHub",
+                        "urls": [],
+                        "vault_name": "Personal",
+                        "item_type": "Login",
+                    }
+                ],
+            }
+        )
+    )
+    refs = load_cache(path)
+    assert refs[0].folder == ""

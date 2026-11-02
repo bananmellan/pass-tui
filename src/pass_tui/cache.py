@@ -12,8 +12,8 @@ from .dedup import dedup_refs
 from .models import ItemRef
 from .passcli import PassCli, PassCliError
 
-CACHE_VERSION = 2
-CACHE_NAME = "items.v2.json"
+CACHE_VERSION = 3
+CACHE_NAME = "items.v3.json"
 
 _ALLOWED_KEYS = {
     "share_id",
@@ -23,6 +23,7 @@ _ALLOWED_KEYS = {
     "vault_name",
     "item_type",
     "item_uuid",
+    "folder",
     "safe_fields",
 }
 

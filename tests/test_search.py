@@ -106,6 +106,27 @@ def test_search_text_contains_badge():
     assert "alias" in text
 
 
+def test_search_text_contains_folder():
+    r = ItemRef("s1", "i1", "GitHub", ("https://github.com",), "Personal", "Login", folder="Work/Dev")
+    assert "Work/Dev" in search_text(r)
+
+
+def test_filter_matches_folder_name():
+    refs = [
+        ref("s1", "i1", "GitHub"),
+        ItemRef("s1", "i2", "Bank", ("https://bank.example.com",), "Personal", "Login", folder="Finance"),
+    ]
+    assert [r.title for r in filter_items(refs, "finan")] == ["Bank"]
+
+
+def test_filter_matches_folder_path_parent():
+    refs = [
+        ref("s1", "i1", "GitHub"),
+        ItemRef("s1", "i2", "Bank", (), "Personal", "Login", folder="Finance/Bank"),
+    ]
+    assert [r.title for r in filter_items(refs, "finance")] == ["Bank"]
+
+
 def test_order_is_stable_within_rank():
     refs = [ref("s1", "i1", "Alpha git"), ref("s1", "i2", "Beta git"), ref("s1", "i3", "git")]
     result = filter_items(refs, "git")

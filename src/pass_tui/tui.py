@@ -12,8 +12,11 @@ Key bindings (in addition to the arrow keys, page up/down, home/end):
 - up/down: arrow keys, ``Ctrl+p`` / ``Ctrl+n`` (emacs style)
 - refresh: ``Ctrl+r``; quit: ``Ctrl+c``
 
-The list renders fixed-width columns (title, type badge, url, vault) so
-rows line up; columns are colored when the terminal supports colors.
+The list renders two rows per item: the first row has the fixed-width
+columns (emoji, title, type badge, folder, vault), the second row (only
+when the item has a url) shows the first url. When only one vault is
+present the vault column is hidden and the vault name moves into the
+title. Columns are colored when the terminal supports colors.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from .types import type_badge, type_emoji
 MAX_ROWS_FALLBACK = 20
 
 # Column layout caps for the item list.
-_MAX_URL_COL = 40
+_MAX_FOLDER_COL = 24
 _MAX_VAULT_COL = 20
 _MIN_TITLE_COL = 8
 _COL_SEP = "  \u00b7  "
@@ -44,6 +47,7 @@ _PAIR_BADGE = 2
 _PAIR_URL = 3
 _PAIR_VAULT = 4
 _PAIR_PROMPT = 5
+_PAIR_FOLDER = 6
 _COLORS_READY = False
 
 
@@ -64,6 +68,7 @@ def _init_colors() -> None:
     curses.init_pair(_PAIR_URL, curses.COLOR_BLUE, bg)
     curses.init_pair(_PAIR_VAULT, curses.COLOR_MAGENTA, bg)
     curses.init_pair(_PAIR_PROMPT, curses.COLOR_YELLOW, bg)
+    curses.init_pair(_PAIR_FOLDER, curses.COLOR_GREEN, bg)
     _COLORS_READY = True
 
 
@@ -288,26 +293,40 @@ def _put_centered(stdscr, y: int, text: str, attr: int) -> int:
     return x
 
 
-def _list_columns(refs: list, width: int) -> tuple[int, int, int, int]:
-    """Fixed column widths for the list: (title, badge, url, vault).
+def _display_title(ref, single_vault: bool) -> str:
+    """Title shown in the list row. When every item lives in one vault
+    the vault column is hidden and the vault name moves into the title
+    ("GitHub (Personal)") instead."""
+    if single_vault and ref.vault_name:
+        return f"{ref.title} ({ref.vault_name})"
+    return ref.title
 
-    Badge/url/vault columns are as wide as their widest cell (capped);
-    the title column takes the remaining space.
+
+def _list_columns(refs: list, width: int, single_vault: bool) -> tuple[int, int, int, int]:
+    """Fixed column widths for the first list row: (title, badge, folder,
+    vault).
+
+    Badge/folder/vault columns are as wide as their widest cell (capped);
+    the title column takes the remaining space. The vault column is
+    dropped entirely in single-vault mode (the vault is in the title).
+    The url is not a column anymore — it gets a full second row.
     """
     avail = max(1, width - 1)
     badge_w = max((len(type_badge(r.item_type)) for r in refs), default=0)
-    url_w = min(max((len(r.urls[0]) for r in refs if r.urls), default=0), _MAX_URL_COL)
-    vault_w = min(
-        max((len(r.vault_name) + 2 for r in refs if r.vault_name), default=0),
-        _MAX_VAULT_COL,
-    )
+    folder_w = min(max((len(r.folder) for r in refs if r.folder), default=0), _MAX_FOLDER_COL)
+    vault_w = 0
+    if not single_vault:
+        vault_w = min(
+            max((len(r.vault_name) + 2 for r in refs if r.vault_name), default=0),
+            _MAX_VAULT_COL,
+        )
     fixed = 0
     columns = 1  # title
     if badge_w:
         fixed += badge_w + len(_COL_SEP)
         columns += 1
-    if url_w:
-        fixed += url_w + len(_COL_SEP)
+    if folder_w:
+        fixed += folder_w + len(_COL_SEP)
         columns += 1
     if vault_w:
         fixed += vault_w
@@ -315,7 +334,7 @@ def _list_columns(refs: list, width: int) -> tuple[int, int, int, int]:
             fixed += len(_COL_SEP)
         columns += 1
     title_w = max(_MIN_TITLE_COL, avail - fixed - _EMOJI_COL - 1)
-    return title_w, badge_w, url_w, vault_w
+    return title_w, badge_w, folder_w, vault_w
 
 
 def _draw_list(stdscr, app: App) -> None:
@@ -335,19 +354,27 @@ def _draw_list(stdscr, app: App) -> None:
     prompt_x = _put_centered(stdscr, 1, prompt, _pair(_PAIR_PROMPT))
 
     visible = screen.visible
-    title_w, badge_w, url_w, vault_w = _list_columns(visible, width)
+    # Single-vault mode: when all items live in one vault, hide the vault
+    # column and put the vault name in the title instead.
+    vault_names = {r.vault_name for r in screen.refs if r.vault_name}
+    single_vault = len(vault_names) <= 1
+    title_w, badge_w, folder_w, vault_w = _list_columns(visible, width, single_vault)
 
     title_attr = _pair(_PAIR_TITLE)
     badge_attr = curses.A_BOLD | _pair(_PAIR_BADGE)
     url_attr = _pair(_PAIR_URL)
+    folder_attr = _pair(_PAIR_FOLDER)
     vault_attr = _pair(_PAIR_VAULT)
 
-    for row in range(list_height):
-        idx = screen.offset + row
-        if idx >= len(visible):
-            break
+    # Each item takes up to 2 screen rows: row 1 = emoji, title, badge,
+    # folder, [vault]; row 2 (only when the item has a url) = first url.
+    # `selected`/`offset` stay item indices into `visible`; `row` counts
+    # screen rows so the url row is skipped when it would not fit.
+    y = 2
+    row = 0
+    idx = screen.offset
+    while row < list_height and idx < len(visible):
         ref = visible[idx]
-        y = 2 + row
         selected = idx == screen.selected
         base = curses.A_REVERSE if selected else curses.A_NORMAL
 
@@ -356,7 +383,8 @@ def _draw_list(stdscr, app: App) -> None:
         if emoji:
             _put(stdscr, y, x, emoji, base)
         x += _EMOJI_COL
-        _put(stdscr, y, x, _truncate(ref.title, title_w).ljust(title_w), base | title_attr)
+        title = _display_title(ref, single_vault)
+        _put(stdscr, y, x, _truncate(title, title_w).ljust(title_w), base | title_attr)
         x += title_w
         badge = type_badge(ref.item_type)
         if badge_w:
@@ -364,17 +392,25 @@ def _draw_list(stdscr, app: App) -> None:
             x += len(_COL_SEP)
             _put(stdscr, y, x, _truncate(badge, badge_w).ljust(badge_w), base | badge_attr)
             x += badge_w
-        if url_w:
+        if folder_w:
             _put(stdscr, y, x, _COL_SEP, base | curses.A_DIM)
             x += len(_COL_SEP)
-            url = _truncate(ref.urls[0], url_w) if ref.urls else ""
-            _put(stdscr, y, x, url.ljust(url_w), base | url_attr)
-            x += url_w
+            _put(stdscr, y, x, _truncate(ref.folder, folder_w).ljust(folder_w), base | folder_attr)
+            x += folder_w
         if vault_w:
             _put(stdscr, y, x, _COL_SEP, base | curses.A_DIM)
             x += len(_COL_SEP)
             vault = f"[{ref.vault_name}]" if ref.vault_name else ""
             _put(stdscr, y, x, _truncate(vault, vault_w).rjust(vault_w), base | vault_attr)
+
+        y += 1
+        row += 1
+        if ref.urls and row < list_height:
+            url_w = max(1, width - 1 - _EMOJI_COL)
+            _put(stdscr, y, _EMOJI_COL, _truncate(ref.urls[0], url_w), base | url_attr)
+            y += 1
+            row += 1
+        idx += 1
 
     status = f"{len(visible)}/{len(screen.refs)} items"
     if screen.message:

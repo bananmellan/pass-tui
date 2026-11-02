@@ -234,7 +234,63 @@ def _urls_from_entry(raw: dict) -> list[str]:
     return urls
 
 
-def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
+def parse_folders(data: Any) -> dict[str, tuple[str, str]]:
+    """Map folder id -> (name, parent_folder_id) from `folder list` JSON.
+
+    `pass-cli folder list --share-id <id> --output json` returns a bare
+    array of Folder structs: {"id", "share_id", "parent_folder_id",
+    "content": {"name": ...}} (FolderData lives under "content"). A
+    {"folders": [...]} wrapper is tolerated.
+    """
+    folders: dict[str, tuple[str, str]] = {}
+    for raw in _as_list(data, ("folders",)):
+        if not isinstance(raw, dict):
+            continue
+        folder_id = _scalar(raw, "id", "folder_id", "folderId")
+        if not folder_id:
+            continue
+        content = _nested(raw, "content")
+        name = (_scalar(content, "name") if isinstance(content, dict) else None) or _scalar(
+            raw, "name"
+        ) or ""
+        parent = _scalar(raw, "parent_folder_id", "parentFolderId") or ""
+        folders[folder_id] = (name, parent)
+    return folders
+
+
+def _folder_paths(folders: dict[str, tuple[str, str]]) -> dict[str, str]:
+    """Map folder id -> display path ("parent/child"; root folders are
+    just their name). Cycle-safe: a parent loop yields the deepest
+    resolvable chain instead of hanging."""
+    paths: dict[str, str] = {}
+
+    def path_of(folder_id: str) -> str:
+        if folder_id in paths:
+            return paths[folder_id]
+        if folder_id not in folders:
+            return ""
+        chain = [folders[folder_id][0]]
+        seen = {folder_id}
+        current = folders[folder_id][1]
+        while current and current in folders and current not in seen:
+            seen.add(current)
+            name, parent = folders[current]
+            chain.append(name)
+            current = parent
+        path = "/".join(reversed(chain))
+        paths[folder_id] = path
+        return path
+
+    for folder_id in folders:
+        path_of(folder_id)
+    return paths
+
+
+def parse_items(
+    data: Any,
+    vault: Vault | None = None,
+    folder_paths: dict[str, str] | None = None,
+) -> list[ItemRef]:
     items = []
     seen: set[str] = set()
     for raw in _as_list(data, ("items", "data", "entries")):
@@ -266,6 +322,8 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
         )
         share_id = share_id or ""
         item_uuid = _scalar(content, "item_uuid", "itemUuid") or ""
+        folder_id = _scalar(raw, "folder_id", "folderId") or ""
+        folder = folder_paths.get(folder_id, "") if folder_paths and folder_id else ""
         # The same item can appear more than once in a vault listing (e.g.
         # pass-cli re-emits it when the vault response is paginated oddly, or
         # a shared item shows up in two shares). Dedup on item_id — Proton
@@ -292,6 +350,7 @@ def parse_items(data: Any, vault: Vault | None = None) -> list[ItemRef]:
                 vault_name=vault_name or "",
                 item_type=item_type,
                 item_uuid=item_uuid,
+                folder=folder,
                 safe_fields=tuple(safe.items()),
             )
         )
@@ -449,6 +508,28 @@ class PassCli:
         data = self._exec_json([self.binary, "vault", "list", "--output", "json"])
         return parse_vaults(data)
 
+    def list_folders(self, vault: Vault) -> dict[str, str]:
+        """Folder id -> display path ("parent/child") for a vault.
+
+        Older pass-cli builds without `folder list` fail the call; that
+        is not an error — items simply show no folder.
+        """
+        try:
+            data = self._exec_json(
+                [
+                    self.binary,
+                    "folder",
+                    "list",
+                    "--share-id",
+                    vault.share_id,
+                    "--output",
+                    "json",
+                ]
+            )
+        except PassCliError:
+            return {}
+        return _folder_paths(parse_folders(data))
+
     def list_items(self, vault: Vault) -> list[ItemRef]:
         # --show-secrets is required: without it pass-cli serializes bare
         # ItemSummary objects (title/id/state only, no content), so no urls
@@ -465,7 +546,8 @@ class PassCli:
                 "--show-secrets",
             ]
         )
-        return parse_items(data, vault)
+        folder_paths = self.list_folders(vault)
+        return parse_items(data, vault, folder_paths)
 
     def list_all_items(self) -> tuple[list[ItemRef], int]:
         """All items across all vaults, deduped.

@@ -25,10 +25,13 @@ def _is_subsequence(needle: str, haystack: str) -> bool:
 
 def search_text(ref: ItemRef) -> str:
     """All searchable text for a ref: title first, then urls, then vault,
-    then the type badge (so typing "alias" lists all hide-my-email items)."""
+    then folder, then the type badge (so typing "alias" lists all
+    hide-my-email items)."""
     parts = [ref.title, *ref.urls]
     if ref.vault_name:
         parts.append(ref.vault_name)
+    if ref.folder:
+        parts.append(ref.folder)
     badge = type_badge(ref.item_type)
     if badge:
         parts.append(badge)

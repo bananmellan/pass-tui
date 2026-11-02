@@ -18,6 +18,7 @@ class ItemRef:
     vault_name: str = ""
     item_type: str = ""
     item_uuid: str = ""
+    folder: str = ""
     # Non-sensitive copyable fields (label -> value) captured at cache
     # rebuild time from pass-cli's --show-secrets listing. Only fields
     # whose values are not secrets (usernames, emails, urls, notes,
@@ -35,6 +36,7 @@ class ItemRef:
             "vault_name": self.vault_name,
             "item_type": self.item_type,
             "item_uuid": self.item_uuid,
+            "folder": self.folder,
         }
         if self.safe_fields:
             data["safe_fields"] = {label: value for label, value in self.safe_fields}
@@ -74,5 +76,6 @@ class ItemRef:
             vault_name=str(raw.get("vault_name") or ""),
             item_type=str(raw.get("item_type") or ""),
             item_uuid=str(raw.get("item_uuid") or ""),
+            folder=str(raw.get("folder") or ""),
             safe_fields=safe_fields,
         )
