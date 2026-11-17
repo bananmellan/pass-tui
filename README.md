@@ -1,51 +1,50 @@
 # pass-tui
 
-A fast, secure **terminal UI** for [Proton Pass](https://proton.me/pass), built on
-the official [`pass-cli`](https://protonpass.github.io/pass-cli/). No GUI
-toolkit — just run it from a terminal.
+A fast, secure **terminal UI** for [Bitwarden](https://bitwarden.com), built on
+the official [`bw` CLI](https://bitwarden.com/help/cli/) and pointed at the EU
+cloud ([bitwarden.eu](https://bitwarden.eu)) by default. No GUI toolkit — just
+run it from a terminal.
 
 ## Features
 
 - Launching `pass-tui` opens a full-screen terminal list of items from **all
-  vaults**, sorted by title. Every row shows the item's **type badge**
-  (`login`, `note`, `alias` for hide-my-email addresses, `card`, `identity`,
-  `ssh key`, `wifi`, `custom`), so aliases are never confused with logins.
-  The badge comes from pass-cli's `ItemContent` enum (`Login`/`Note`/`Alias`/
-  `CreditCard`/`Identity`/`SshKey`/`Wifi`/`Custom`, serialized externally
-  tagged as `content.content = {"Login": {...}}` etc.). Typing a badge name
-  (e.g. `alias`) filters to exactly that type, ranked first.
+  vaults** (your personal vault plus every organization), sorted by title.
+  Each item takes two rows: the first shows the item's **type emoji**, title,
+  **type badge** (`login`, `note`, `card`, `identity`, `custom` — mapped from
+  bw's numeric item `type`), **folder**, and **vault**; the vault column is
+  hidden when only one vault exists. The second row shows the item's first
+  url (when it has one). Typing a badge name (e.g. `card`) filters to exactly
+  that type, ranked first.
   **Search is live**: the list filters as you type. Like rofi, an empty
-  prompt shows no results — items appear once at least one character is
-  in the search bar.
-- Items are listed from a local cache (`$XDG_CACHE_HOME/pass-tui/items.v2.json`)
-  containing **title, item id, share id, urls, vault name, item type, item
-  uuid** and the **non-sensitive field values** (usernames, emails, notes,
-  urls, Text/Timestamp extra fields, identity details, ...). The rebuild runs
-  `pass-cli item list --show-secrets` (required: without it pass-cli emits
-  title/id summaries with no urls) and parses the JSON in-process. **Secret
-  values are never written to disk**: hidden fields (passwords, PINs, card
-  numbers, ...) are cached as label-only entries (name kept, value dropped),
-  so the field menu can list them censored but copying one always fetches the
-  value live from pass-cli.
+  prompt shows no results — items appear once at least one character is in
+  the search bar. Matches cover title, urls, vault name and folder.
+- Items are listed from a local cache (`$XDG_CACHE_HOME/pass-tui/items.v4.json`)
+  containing **title, item id, urls, vault name, item type, folder** and the
+  **non-sensitive field values** (usernames, emails, notes, urls, Text extra
+  fields, identity details, ...). The rebuild runs `bw sync` +
+  `bw list items` (plus `bw list folders` / `bw list organizations` for the
+  folder and vault names) and parses the JSON in-process. **Secret values are
+  never written to disk**: hidden fields (passwords, PINs, card numbers, ...)
+  are cached as label-only entries (name kept, value dropped), so the field
+  menu can list them censored but copying one always fetches the value live
+  from bw.
 - Startup shows a splash screen immediately: the session check
-  ("Checking session…") and any lock-code / access-token prompt render
-  inside the UI, so a slow pass-cli never leaves a blank terminal. Esc
-  or Ctrl-c cancels the boot at any point.
+  ("Checking session…") and any account-email / master-password prompt render
+  inside the UI (passwords as one ● per character, in a box), so a slow bw
+  never leaves a blank terminal. Esc or Ctrl-c cancels the boot at any point.
 - Startup is fast: the list renders straight from the cache; when the cache
   is missing or older than `PASS_TUI_CACHE_TTL` seconds (default 600) a
   background rebuild refreshes it without blocking the UI — the list shows
   "Reloading items…" until the fresh items land.
 - Navigation is snappy: opening an item and copying a non-sensitive field are
-  served entirely from the cache — no pass-cli call. Only copying a sensitive
-  field (password, PIN, TOTP, ...) triggers a live `pass-cli item view` /
-  `totp` call.
+  served entirely from the cache — no bw call. Only copying a sensitive
+  field (password, PIN, TOTP, ...) triggers a live `bw get item <id>` call;
+  TOTP codes come from `bw get totp <id>`.
 - Loading feedback: while any slow operation runs (initial cache refresh,
   `Ctrl-r` refresh, opening an item without cached fields, fetching a
   sensitive field, generating a TOTP code) the header shows what is happening
   ("Reloading items…", "Loading <title>…", "Fetching <field>…",
   "Generating TOTP code…").
-- Vault listing is parallelized across vaults (thread pool), so even large
-  accounts rebuild quickly.
 - If the clipboard contains an `http(s)://` URL or a bare hostname (`wl-paste`,
   `xclip` or `xsel`), items whose cached urls contain the clipboard hostname
   (fuzzy: path, query, trailing slashes and case are ignored) are surfaced: a
@@ -56,51 +55,40 @@ toolkit — just run it from a terminal.
   then subdomain, then host-contains; ties break toward titles that name the
   host (including camelCase initials, so "NextCloud" ranks for `nc.honung.org`),
   then items with fewer unrelated urls.
-- Selecting an item shows a field menu (instantly, from the cache);
-  selecting a field copies its value to the clipboard. Sensitive fields are
-  fetched on demand (`pass-cli item view`) at copy time; TOTP codes are
-  generated via `pass://<share>/<item>/totp`. Field values are never printed
-  to the screen — only copied.
-- After **copying** a field, relaunching within `PASS_TUI_REOPEN_SECONDS`
-  (default 20) reopens the same item's field menu — once. The reopen memory is
-  cleared on every program start, so if you close without copying and relaunch,
-  you get the regular list. Merely opening an item never arms this.
-- Items are deduped by `item_uuid` when present (the content-level identity,
-  stable across re-imports/sync conflicts), falling back to `item_id`
-  (globally unique in Proton Pass), so a shared item visible through two
-  vaults — or the same item listed twice with different ids — appears once.
-- Alias items expose their address as a copyable `email:` field; the
-  structural fields (mailboxes, prefix/suffix, flags) are hidden.
+- Selecting an item shows a field menu (instantly, from the cache); selecting
+  a field copies its value to the clipboard. **Enter on a url field opens the
+  url in your browser instead of copying it.** Sensitive fields are fetched
+  on demand (`bw get item <id>`) at copy time. Field values are never printed
+  to the screen — only copied (or opened).
+- After **copying** a field or **opening a url**, relaunching within
+  `PASS_TUI_REOPEN_SECONDS` (default 20) reopens the same item's field menu —
+  once. The reopen memory is cleared on every program start, so if you close
+  without copying and relaunch, you get the regular list. Merely opening an
+  item never arms this.
+- Items are deduped by item id (bw item ids are unique), so the same item
+  listed twice appears once.
+- Custom fields of an item are offered as `field: <name>` entries; hidden
+  custom fields are censored like passwords.
 
 ## Requirements
 
 - Python >= 3.10 (standard library only — curses ships with CPython)
-- `pass-cli` — log in once with `pass-cli login` (web flow). pass-tui
-  sets two defaults for you (both opt-out, see Configuration):
-  - it exports `PROTON_PASS_LINUX_KEYRING=dbus` for its pass-cli
-    children, so the session survives reboots on Linux (the desktop
-    Secret Service, e.g. GNOME Keyring, holds the encryption key
-    instead of the kernel keyring that is wiped on every reboot);
-  - on the first launch with an unlocked session it offers to create a
-    [session
-    lock](https://protonpass.github.io/pass-cli/commands/session/)
-    with a 10-minute idle timeout, so the session PIN-locks after 10
-    minutes idle (30–900 s). pass-tui detects a locked session and
-    prompts for the lock code.
-  If pass-tui finds no session at all (e.g. first run on a new
-  machine), it prompts for a [personal access
-  token](https://protonpass.github.io/pass-cli/get-started/configuration/#personal-access-tokens)
-  and logs in with it instead. Note that token sessions expire after 2
-  hours and cannot have a session lock, so for daily use the one-time
-  `pass-cli login` is the better option
+- [`bw`](https://bitwarden.com/help/cli/) — the official Bitwarden CLI
+  (`npm install -g @bitwarden/cli`). Log in once with `bw login`
+  (interactive/SSO/2FA), or set `BW_CLIENTID` + `BW_CLIENTSECRET` in the
+  environment for API-key login. pass-tui points bw at `https://bitwarden.eu`
+  automatically on startup (`bw config server`; override with
+  `PASS_TUI_BW_SERVER`, e.g. `https://vault.bitwarden.com` or a self-hosted
+  URL) and refuses to send any credential if the configured region cannot be
+  confirmed.
 - `wl-copy`/`wl-paste`, `xclip` or `xsel` for clipboard integration
 - A terminal with curses support
 
 ## Install
 
 ```sh
-git clone https://github.com/bananmellan/pass
-cd pass
+git clone https://github.com/bananmellan/pass-tui
+cd pass-tui
 pip install .            # or: pipx install .
 ```
 
@@ -114,33 +102,35 @@ Bind `pass-tui` (or `bin/pass-tui`) to a key in your window manager or shell.
 
 ## Usage
 
-- The list starts empty: type to filter items (matches on title, urls
-  and vault name; substring first, then fuzzy subsequence for tokens of
+- The list starts empty: type to filter items (matches on title, urls, vault
+  name and folder; substring first, then fuzzy subsequence for tokens of
   3+ characters). Results appear as soon as the prompt has at least one
-  character.
+  character. Special characters (å, ä, ö, ...) type normally.
 - `↑`/`↓` (or `PgUp`/`PgDn`, `Home`/`End`) move the selection; `Enter` opens
   the selected item's field menu. Emacs-style binds also work: `Ctrl+n`/`Ctrl+p`
   move down/up, `Ctrl+m` (or `Ctrl+j`) is enter, `Ctrl+l` is back/quit.
-- The list renders fixed-width columns (title, type badge, url, vault), colored
-  when the terminal supports colors.
+- The list renders fixed-width columns per row (emoji, title, type badge,
+  folder, vault), colored when the terminal supports colors; the search bar
+  and titles are centered.
 - The field menu uses the same style: fixed-width (kind, value) columns with a
   short dimmed preview of each value after it. **Hidden fields are censored**:
-  passwords, PINs, card numbers, private keys, SSN/passport/license numbers,
-  TOTP, and any extra/custom field whose content kind is `Hidden` or `Totp`
-  show a fixed-length `••••••` mask (so neither the value nor its length
-  leaks). Usernames, emails, urls, notes, and `Text`/`Timestamp` fields are
-  shown in full. Copying always copies the real value.
+  passwords, PINs, card numbers, CVVs, private keys, SSN/passport/license
+  numbers, TOTP, and any extra/custom field whose content kind is hidden show
+  a fixed-length `••••••` mask (so neither the value nor its length leaks).
+  Usernames, emails, urls, notes, and text fields are shown in full. Copying
+  always copies the real value.
 - In the field menu, `Enter` copies the field's value to the clipboard and
-  **quits the program** (like rofi). The last-copied item's menu reopens on the
-  next launch within `PASS_TUI_REOPEN_SECONDS` (default 20 s). `Esc` goes back
-  to the item list; `Esc` again (or with an empty query) quits.
+  **quits the program** (like rofi) — unless the field is a url, in which case
+  the url is opened in the browser instead. The last-copied/last-opened
+  item's menu reopens on the next launch within `PASS_TUI_REOPEN_SECONDS`
+  (default 20 s). `Esc` goes back to the item list; `Esc` again (or with an
+  empty query) quits.
 - When the clipboard holds a URL, the matching items are listed with the host
   prefilled as the query. Host-like queries match precisely (substring only —
   no fuzzy subsequence), so unrelated items never appear; once you edit the
   query past the host, normal fuzzy matching resumes.
 - Every copyable field of every item type is offered: note, login
-  email/username/password, TOTP, urls, alias addresses (hide-my-email items),
-  credit-card number/PIN, identity fields, ssh keys, wifi passwords, custom
+  username/password/TOTP, urls, credit-card fields, identity fields, custom
   sections, and extra fields.
 - `Esc` in the list first clears the search query, then quits.
 - `Ctrl-r` forces a synchronous cache rebuild. `Ctrl-c` quits immediately.
@@ -149,14 +139,13 @@ Bind `pass-tui` (or `bin/pass-tui`) to a key in your window manager or shell.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PASS_TUI_PASS_CLI` | `pass-cli` | pass-cli executable |
+| `PASS_TUI_BW_BIN` | `bw` | bw executable (`PASS_TUI_PASS_CLI` still honored as a legacy alias) |
+| `PASS_TUI_BW_SERVER` | `https://bitwarden.eu` | Bitwarden server/region (`bw config server`); e.g. `https://vault.bitwarden.com` or a self-hosted URL |
 | `PASS_TUI_CACHE_DIR` | `$XDG_CACHE_HOME/pass-tui` | cache/state directory |
 | `PASS_TUI_CACHE_TTL` | `600` | cache freshness in seconds |
-| `PASS_TUI_REOPEN_SECONDS` | `20` | reopen last item's menu after a copy |
+| `PASS_TUI_REOPEN_SECONDS` | `20` | reopen the last item's menu after a copy/open |
 | `PASS_TUI_DEBUG` | unset | set to `1` to log to `debug.log` |
 | `PASS_TUI_VERBOSE` | unset | set to `1` (or pass `--verbose`) to log decision points (clipboard content, extracted host, cache stats, match count) to stderr and `debug.log` |
-| `PASS_TUI_KEYRING_BACKEND` | `dbus` | pass-cli Linux key storage: `dbus` (Secret Service, survives reboot) or `kernel` (wiped on reboot). pass-tui exports `PROTON_PASS_LINUX_KEYRING` accordingly unless it is already set |
-| `PASS_TUI_LOCK_IDLE_TIMEOUT` | `600` | session-lock idle timeout in seconds offered at first launch (30–900); `0` disables the offer |
 
 The legacy `PASS_ROFI_*` environment variables are still honored as fallbacks,
 and an existing `$XDG_CACHE_HOME/pass-rofi` cache directory is reused if no
@@ -170,39 +159,39 @@ host, how many cached items have urls, and how many matched.
 ## Security model
 
 - The cache stores only non-sensitive data: metadata (titles, ids, urls, vault
-  names, item type/uuid) plus non-sensitive field values (usernames, emails,
-  notes, urls, Text/Timestamp extra fields). Items are resolved by their exact
-  `share_id` + `item_id`, so duplicate titles can never open the wrong item.
+  names, item types, folders) plus non-sensitive field values (usernames,
+  emails, notes, urls, Text extra fields, identity details). Items are
+  resolved by their exact item id, so duplicate titles can never open the
+  wrong item.
 - Secrets are never cached and never written to disk. Hidden field *names*
   are cached (so the menu can list them), but their *values* are dropped and
-  fetched live from pass-cli only when copied, passed through pipes, and
-  written straight to the clipboard — never printed to the screen. The field
-  view censors hidden fields (passwords, PINs, card numbers, private keys,
-  SSN/passport/license numbers, TOTP, and `Hidden`/`Totp` extra fields)
-  behind a fixed-length mask.
+  fetched live from bw only when copied, passed through pipes, and written
+  straight to the clipboard — never printed to the screen. The field view
+  censors hidden fields (passwords, PINs, card numbers, CVVs, private keys,
+  SSN/passport/license numbers, TOTP, and hidden extra fields) behind a
+  fixed-length mask.
 - Cache and state files are written atomically with `0600` permissions.
 - Field values are never logged; debug logging records only titles, ids and
   error messages.
-- pass-tui's startup gate distinguishes three pass-cli states: unlocked
-  (start immediately), locked by a session lock (prompt for the lock
-  code, hidden input), and logged out (prompt for a personal access
-  token, hidden input). Lock codes and tokens are passed to pass-cli
-  from memory over a pipe/pty — never via argv (visible in the process
-  list), never printed, never logged and never written to disk by
-  pass-tui. PAT sessions last only 2 hours, so an interactive web login
-  (`pass-cli login`) is recommended for regular use; the token prompt is
-  the fallback for headless or fresh machines. If you do use a token,
-  create it with the longest expiry (up to 1 year) via `pass-cli pat
-  create --name pass-tui --expiration 1y`, then grant vault access with
-  `pass-cli pat access grant`.
-- Session locks are enforced server-side by Proton: even if local state
-  is tampered with, API calls are rejected until the session is
-  unlocked. The lock code is never stored anywhere — if you forget it,
-  `pass-cli logout` and log in again. Note that PAT sessions cannot have
-  a session lock, so the first-launch lock offer is skipped for them.
-- The `PROTON_PASS_LINUX_KEYRING=dbus` default only changes where
-  pass-cli stores its local encryption key (Secret Service vs kernel
-  keyring); it does not store any credential itself.
+- The bw **session key** (the `bw unlock --raw` / `bw login --raw` output) is
+  kept in memory only and injected into every bw child as the `BW_SESSION`
+  environment variable — never via argv (visible in the process list) and
+  never written to disk.
+- The **master password** is handed to `bw unlock` / `bw login` through a
+  child-only environment variable referenced by `--passwordenv` — never via
+  argv, never printed, never logged, never written to disk by pass-tui.
+- pass-tui's startup gate distinguishes three bw states (`bw status`):
+  **unlocked** (start immediately), **locked** (prompt for the master
+  password, hidden input with one ● per character; a wrong password
+  re-prompts), and **logged out** (if `BW_CLIENTID` + `BW_CLIENTSECRET` are
+  set, log in with the API key via `bw login --apikey` and fall through to
+  the unlock prompt — an API key cannot derive the vault key; otherwise
+  prompt for the account email (visible) and the master password (hidden) and
+  run `bw login <email>`). Accounts with 2FA/SSO cannot complete `bw login`
+  non-interactively — log in once with `bw login` in a terminal first, then
+  start pass-tui.
+- pass-tui refuses to continue if bw cannot be pointed at the configured
+  server, so the master password is never sent to the wrong region.
 
 ## Development
 
@@ -216,12 +205,13 @@ Layout:
 bin/pass-tui             launcher for running from a checkout
 src/pass_tui/
   cli.py                 entry point: arg parsing, --rebuild, tty check
-  auth.py                startup auth gate: unlocked / locked (PIN) / token login
+  auth.py                startup auth gate: unlocked / locked (master
+                         password) / API-key or email+password login
   app.py                 UI-agnostic controller (screens + key handling)
   tui.py                 curses rendering, key translation, boot splash
   search.py              live filtering (token substring/subsequence ranking)
-  types.py               item-type normalization and list badges
-  passcli.py             pass-cli subprocess wrapper + JSON parsing
+  types.py               item-type normalization and list badges/emojis
+  bitwarden.py           bw subprocess wrapper + JSON parsing + item adapter
   cache.py               item cache (atomic, 0600, TTL, background refresh;
                          stores metadata + non-sensitive field values only)
   state.py               last-copied / open-item state (one-shot reopen)
@@ -229,7 +219,7 @@ src/pass_tui/
   fields.py              item-view JSON -> field labels and values;
                          safe-field capture + cache-view reconstruction
   config.py              environment-based configuration
-  models.py              Vault / ItemRef dataclasses
+  models.py              ItemRef dataclass
   dedup.py               item dedup by item_uuid / item_id
 tests/                   pytest suite (app controller, search, tui, pty smoke)
 ```

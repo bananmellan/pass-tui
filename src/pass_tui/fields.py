@@ -1,6 +1,10 @@
-"""Copyable-field extraction for `pass-cli item view --output json`.
+"""Copyable-field extraction for item views.
 
-pass-cli serializes the item as ``{"item": {...}, "attachments": [...]}``
+The backend (bitwarden.py) adapts each decrypted `bw get item` result to
+the canonical view shape consumed here::
+
+    {"item": {"content": {...}}, "attachments": [...]}
+
 where ``item.content`` is an :class:`ItemData`:
 
 - ``title``, ``note``, ``item_uuid``
@@ -112,6 +116,7 @@ _HIDDEN_SECTION_KEYS = {
     "pwd",
     "pin",
     "number",
+    "cardnumber",
     "verification_number",
     "cvv",
     "cvc",
@@ -183,7 +188,7 @@ def _item(data: dict) -> dict:
 
 def _extra_fields(data: dict) -> list:
     """Extra fields from either the content or the top level (older
-    pass-cli shapes put them top-level)."""
+    legacy shapes put them top-level)."""
     content = _content(data)
     for candidate in (content.get("extra_fields"), data.get("extra_fields")):
         if isinstance(candidate, list):
@@ -409,7 +414,7 @@ def _label_value_pairs(data: dict) -> list[tuple[str, str, bool]]:
             urls.extend(u for u in candidates if isinstance(u, str) and u)
         urls.extend(_autofill_urls(section))
         if section.get("totp_uri"):
-            pairs.append(("totp", "", True))  # value fetched live via pass-cli
+            pairs.append(("totp", "", True))  # value fetched live via bw
         for group_key, prefix in _IDENTITY_EXTRA_GROUPS.items():
             pairs.extend(_group_fields(section, group_key, prefix))
         pairs.extend(_custom_sections(section))
@@ -480,7 +485,7 @@ def normalize_url(value: str) -> str:
 def field_value(data: dict, label: str, totp: str = "") -> str:
     """Resolve a label from :func:`field_labels` to its copyable value.
 
-    ``totp`` is the live code fetched via ``pass-cli item view
+    ``totp`` is the live code fetched via ``bw get totp
     pass://<share>/<item>/totp``; the stored ``totp_uri`` is not copied.
     """
     if label == "totp":
@@ -498,7 +503,7 @@ def safe_fields_from_view(data: dict) -> dict[str, str]:
     notes, Text/Timestamp extra fields, identity details, ...). Hidden
     fields are included as (label, "") — the field *name* is kept so
     the menu can list it (censored), but the secret *value* is dropped
-    and always fetched live from pass-cli at copy time. The ``totp``
+    and always fetched live from bw at copy time. The ``totp``
     label is kept as ("totp", "") for the same reason: codes are
     generated live.
     """

@@ -7,7 +7,7 @@ from pass_tui.app import App, FieldScreen, ListScreen, QuitRequested
 from pass_tui.cache import CACHE_NAME, dump_cache
 from pass_tui.config import Config
 from pass_tui.models import ItemRef
-from pass_tui.passcli import PassCliError
+from pass_tui.bitwarden import BwError
 from pass_tui.state import StateStore
 
 
@@ -83,7 +83,7 @@ def env(tmp_path):
 
 def make_app(tmp_path, client=None, clipboard=None, refs=None, config=None, now=None, opener=None):
     from pass_tui.cache import Cache
-    from pass_tui.passcli import PassCli
+    from pass_tui.bitwarden import BwCli
 
     config = config or Config(cache_dir=str(tmp_path / "cache"), verbose=False)
     cache_dir = Path(config.cache_dir)
@@ -141,7 +141,7 @@ def test_start_rebuild_failure_shows_empty_list(tmp_path):
     client = FakeClient()
 
     def boom():
-        raise PassCliError("offline")
+        raise BwError("offline")
 
     client.list_all_items = boom
     app = make_app(tmp_path, client=client, refs=None)
@@ -844,7 +844,7 @@ def test_field_navigation_and_filter(tmp_path):
     assert len(screen.visible) > 0
 
 
-def test_ctrl_r_refreshes_from_passcli(tmp_path):
+def test_ctrl_r_refreshes_from_bw(tmp_path):
     client = FakeClient(items=([ref("s1", "i9", "New Item")], 1))
     app = make_app(tmp_path, client=client, refs=[ref()])
     app.start()
@@ -858,7 +858,7 @@ def test_ctrl_r_failure_keeps_list_and_reports(tmp_path):
     client = FakeClient()
 
     def boom():
-        raise PassCliError("offline")
+        raise BwError("offline")
 
     client.list_all_items = boom
     app = make_app(tmp_path, client=client, refs=[ref()])
@@ -918,7 +918,7 @@ def test_ctrl_r_failure_keeps_field_view(tmp_path):
     client = FakeClient()
 
     def boom():
-        raise PassCliError("offline")
+        raise BwError("offline")
 
     client.list_all_items = boom
     app = make_app(tmp_path, client=client, refs=[ref()])
@@ -1023,7 +1023,7 @@ def test_view_failure_returns_to_list_with_message(tmp_path):
     client = FakeClient()
 
     def boom(item_ref):
-        raise PassCliError("gone")
+        raise BwError("gone")
 
     client.view_item_with_retry = boom
     app = make_app(tmp_path, client=client, refs=[ref()])
@@ -1217,7 +1217,7 @@ SAFE_REF = ItemRef(
 )
 
 
-def test_open_item_with_cached_fields_skips_passcli(tmp_path):
+def test_open_item_with_cached_fields_skips_bw(tmp_path):
     """An item whose fields were captured at rebuild time opens
     instantly: no view_item/view_item_with_retry call."""
     client = FakeClient()
@@ -1241,7 +1241,7 @@ def test_open_item_with_cached_fields_skips_passcli(tmp_path):
     assert "totp" not in previews
 
 
-def test_copy_safe_field_uses_cache_without_passcli(tmp_path):
+def test_copy_safe_field_uses_cache_without_bw(tmp_path):
     """Copying a non-sensitive field is served from the cache."""
     client = FakeClient()
     clipboard = FakeClipboard()
@@ -1263,7 +1263,7 @@ def test_copy_safe_field_uses_cache_without_passcli(tmp_path):
 
 
 def test_copy_sensitive_field_fetches_live(tmp_path):
-    """Copying a hidden field fetches the value live from pass-cli;
+    """Copying a hidden field fetches the value live from bw;
     the cached ref never carried the secret."""
     client = FakeClient()
     clipboard = FakeClipboard()
@@ -1307,7 +1307,7 @@ def test_copy_totp_calls_client_totp(tmp_path):
 
 def test_open_item_without_cached_fields_falls_back_to_live(tmp_path):
     """Refs written before safe-field caching (empty safe_fields)
-    still open via a live pass-cli view, with a busy indicator."""
+    still open via a live bw view, with a busy indicator."""
     client = FakeClient()
     app = make_app(tmp_path, client=client, refs=[ref()])
     screen = app.start()
@@ -1367,7 +1367,7 @@ def test_busy_cleared_when_open_fails(tmp_path):
     client = FakeClient()
 
     def boom(item_ref):
-        raise PassCliError("gone")
+        raise BwError("gone")
 
     client.view_item_with_retry = boom
     app = make_app(tmp_path, client=client, refs=[ref()])
@@ -1382,7 +1382,7 @@ def test_busy_cleared_when_sensitive_copy_fails(tmp_path):
     client = FakeClient()
 
     def boom(item_ref):
-        raise PassCliError("gone")
+        raise BwError("gone")
 
     client.view_item = boom
     clipboard = FakeClipboard()
@@ -1416,7 +1416,7 @@ def test_start_with_stale_cache_renders_stale_and_refreshes(tmp_path):
     import time as _time
 
     from pass_tui.cache import Cache
-    from pass_tui.passcli import PassCli
+    from pass_tui.bitwarden import BwCli
 
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir(parents=True)

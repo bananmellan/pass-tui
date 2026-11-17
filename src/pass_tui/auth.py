@@ -1,44 +1,40 @@
-"""Authentication gate for pass-tui.
+"""Authentication gate for pass-tui (Bitwarden CLI, `bw`).
 
-Before the TUI starts, pass-cli must have a usable session. The gate
-distinguishes three states:
+Before the TUI starts, bw must have an unlocked vault session. The gate
+distinguishes three states (`bw status`):
 
-- unlocked: the session answers API calls; pass-tui starts immediately.
-- locked: a session exists but is protected by a pass-cli session lock
-  (see https://protonpass.github.io/pass-cli/commands/session/). The
-  user is prompted for the lock code (echo disabled) and pass-tui
-  unlocks the session. This is the "type a PIN" flow.
-- logged out: no session. The user is prompted for a Proton Pass
-  personal access token
-  (https://protonpass.github.io/pass-cli/get-started/configuration/#personal-access-tokens)
-  and pass-cli is logged in with it.
+- unlocked: a session key is active; pass-tui starts immediately.
+- locked: logged in but the vault is locked. The user is prompted for
+  the master password (echo disabled) and `bw unlock` runs with it.
+- logged out: no bw login. If BW_CLIENTID + BW_CLIENTSECRET are set in
+  the environment, the gate logs in with the API key (`bw login
+  --apikey`) and falls through to the unlock prompt. Otherwise the
+  user is prompted for the account email (visible) and master password
+  (hidden), and `bw login <email>` runs with them.
 
-Secrets (lock code, access token) are read with echo disabled and
-handed to pass-cli over a pipe/pty from memory. They are never printed,
-logged, passed via argv, or written to disk. Only the pass/fail outcome
-is ever reported.
+Secrets (master password) are handed to bw through a child-only
+environment variable (`--passwordenv`) from memory. They are never
+printed, logged, passed via argv, or written to disk. The session key
+bw prints is kept in memory and passed to later children as BW_SESSION.
+Only the pass/fail outcome is ever reported.
 """
 
 from __future__ import annotations
 
 import getpass
+import os
 import sys
 from typing import Callable
 
-from .config import Config
-from .passcli import (
+from .bitwarden import (
+    SESSION_LOGGED_OUT,
     SESSION_LOCKED,
     SESSION_UNLOCKED,
-    PassCli,
-    PassCliError,
-    SessionLockedError,
+    BwCli,
+    BwError,
+    WrongPasswordError,
 )
-
-_TOKEN_URL = (
-    "https://protonpass.github.io/pass-cli/get-started/configuration/"
-    "#personal-access-tokens"
-)
-_LOCK_URL = "https://protonpass.github.io/pass-cli/commands/session/"
+_API_KEY_URL = "https://bitwarden.com/help/cli/#using-an-api-key"
 
 
 class AuthAborted(Exception):
@@ -58,78 +54,67 @@ def _say(stream, text: str) -> None:
         print(text, file=stream)
 
 
-
-def prompt_for_token(
+def prompt_for_email(
     stream=None,
-    input_fn: Callable[[str], str] = getpass.getpass,
+    input_fn: Callable[[str], str] = input,
 ) -> str:
-    """Prompt for a personal access token, hidden (no echo).
+    """Prompt for the Bitwarden account email (visible input).
 
-    Returns the entered token. Raises AuthAborted when the user aborts
-    (empty input is treated as "try again"; Ctrl-c/EOF abort).
-    """
-    stream = stream or sys.stderr
-    while True:
-        print(
-            "pass-tui: pass-cli is not logged in.",
-            file=stream,
-        )
-        print(
-            "Run 'pass-cli login' to log in with your Proton account, or enter a",
-            file=stream,
-        )
-        print(
-            f"personal access token (created at {_TOKEN_URL}); note that",
-            file=stream,
-        )
-        print(
-            "token sessions expire after 2 hours and will ask again.",
-            file=stream,
-        )
-        try:
-            token = input_fn("Personal access token (pst_...::key, input hidden): ")
-        except (EOFError, KeyboardInterrupt):
-            raise AuthAborted() from None
-        token = token.strip()
-        if token:
-            return token
-        print("pass-tui: empty token, try again (Ctrl-c to abort).", file=stream)
-
-
-def prompt_for_lock_code(
-    stream=None,
-    input_fn: Callable[[str], str] = getpass.getpass,
-) -> str:
-    """Prompt for the pass-cli session lock code, hidden (no echo).
-
-    Returns the entered code. Raises AuthAborted when the user aborts
+    Returns the entered email. Raises AuthAborted when the user aborts
     (Ctrl-c/EOF); empty input re-prompts.
     """
     stream = stream or sys.stderr
     while True:
-        print(
-            "pass-tui: the pass-cli session is locked.",
-            file=stream,
-        )
+        print("pass-tui: bw is not logged in.", file=stream)
         try:
-            code = input_fn("Lock code (input hidden): ")
+            email = input_fn("Bitwarden account email: ")
         except (EOFError, KeyboardInterrupt):
             raise AuthAborted() from None
-        code = code.strip()
-        if code:
-            return code
-        print("pass-tui: empty code, try again (Ctrl-c to abort).", file=stream)
+        email = email.strip()
+        if email:
+            return email
+        print("pass-tui: empty email, try again (Ctrl-c to abort).", file=stream)
+
+
+def prompt_for_master_password(
+    stream=None,
+    input_fn: Callable[[str], str] = getpass.getpass,
+) -> str:
+    """Prompt for the master password, hidden (no echo).
+
+    Returns the entered password. Raises AuthAborted when the user
+    aborts (Ctrl-c/EOF); empty input re-prompts.
+    """
+    stream = stream or sys.stderr
+    while True:
+        print("pass-tui: the vault is locked.", file=stream)
+        try:
+            password = input_fn("Master password (input hidden): ")
+        except (EOFError, KeyboardInterrupt):
+            raise AuthAborted() from None
+        password = password.strip()
+        if password:
+            return password
+        print("pass-tui: empty password, try again (Ctrl-c to abort).", file=stream)
+
+
+def has_api_key(env=None) -> bool:
+    """True when BW_CLIENTID + BW_CLIENTSECRET are set in the environment,
+    so `bw login --apikey` can run without prompting for credentials."""
+    env = os.environ if env is None else env
+    return bool(env.get("BW_CLIENTID") and env.get("BW_CLIENTSECRET"))
 
 
 def ensure_authenticated(
-    client: PassCli,
-    prompt_token: Callable[[], str] = prompt_for_token,
-    prompt_lock: Callable[[], str] = prompt_for_lock_code,
+    client: BwCli,
+    prompt_email: Callable[[], str] = prompt_for_email,
+    prompt_password: Callable[[], str] = prompt_for_master_password,
     stream=None,
     log: Callable[[str], None] | None = None,
     state: str | None = None,
+    env=None,
 ) -> bool:
-    """Make sure pass-cli has a usable (unlocked) session.
+    """Make sure bw has an unlocked vault session.
 
     Returns True when pass-tui may start. Returns False when a login or
     unlock attempt failed (the caller should exit with an error
@@ -144,90 +129,75 @@ def ensure_authenticated(
     if state is None:
         state = client.session_state()
     if state == SESSION_UNLOCKED:
-        log("pass-cli session valid")
+        log("bw session unlocked")
         return True
+    if state == SESSION_LOGGED_OUT and has_api_key(env):
+        # API key login (credentials come from the environment, not a
+        # prompt); the vault stays locked afterwards, so continue to
+        # the unlock prompt below.
+        log("logging in with API key (BW_CLIENTID/BW_CLIENTSECRET)")
+        try:
+            client.login_with_api_key()
+        except BwError as exc:
+            _say(stream, f"pass-tui: API key login failed: {exc}")
+            log(f"api key login failed: {exc}")
+            return False
+        state = client.session_state()
+        if state == SESSION_UNLOCKED:
+            log("bw session unlocked after API key login")
+            return True
+        if state != SESSION_LOCKED:
+            _say(stream, "pass-tui: API key login did not establish a session.")
+            log("api key login: unexpected state after login")
+            return False
     if state == SESSION_LOCKED:
-        log("pass-cli session locked, prompting for the lock code")
+        log("vault locked, prompting for the master password")
         while True:
-            code = prompt_lock()
+            password = prompt_password()
             try:
-                client.unlock_session(code)
-            except SessionLockedError:
-                _say(stream, "pass-tui: wrong lock code, try again.")
-                log("wrong lock code")
+                client.unlock_session(password)
+            except WrongPasswordError:
+                _say(stream, "pass-tui: wrong master password, try again.")
+                log("wrong master password")
                 continue
-            except PassCliError as exc:
+            except BwError as exc:
                 _say(stream, f"pass-tui: unlock failed: {exc}")
                 log(f"unlock failed: {exc}")
                 return False
             if client.session_state() != SESSION_UNLOCKED:
-                _say(
-                    stream,
-                    "pass-tui: unlock did not establish a usable session.",
-                )
+                _say(stream, "pass-tui: unlock did not establish a usable session.")
                 log("unlock succeeded but session check failed")
                 return False
-            log("session unlocked")
+            log("vault unlocked")
             return True
-    log("pass-cli not authenticated, prompting for a personal access token")
-    token = prompt_token()
-    try:
-        client.login_with_token(token)
-    except PassCliError as exc:
-        _say(stream, f"pass-tui: login failed: {exc}")
-        log(f"login failed: {exc}")
-        return False
-    if client.session_state() != SESSION_UNLOCKED:
-        _say(
-            stream,
-            "pass-tui: login did not establish a session "
-            "(token invalid or expired?).",
-        )
-        log("login succeeded but session check failed")
-        return False
-    log("logged in with personal access token")
-    return True
-
-
-def setup_session_locks(
-    client: PassCli,
-    config: Config,
-    prompt_lock: Callable[[], str] = prompt_for_lock_code,
-    stream=None,
-    log: Callable[[str], None] | None = None,
-) -> None:
-    """Best-effort session-lock setup, called once an unlocked session
-    exists. Default-on conveniences, all no-ops on failure:
-
-    - If the session has no lock yet and config.lock_idle_timeout > 0,
-      prompt for a lock code and create the lock with that idle
-      timeout. Skipped for PAT sessions (pass-cli refuses locks on
-      them) — detected via session_has_lock plus a refused create.
-    """
-    stream = stream or sys.stderr
-    log = log or (lambda msg: None)
-    if config.lock_idle_timeout <= 0:
-        return
-    if client.session_has_lock():
-        log("session lock already configured")
-        return
-    log("no session lock configured, prompting to create one")
-    _say(stream, "pass-tui: protect this session with a lock code?")
+    # Logged out and no API key in the environment: email + master
+    # password login.
+    log("not logged in, prompting for email and master password")
     _say(
         stream,
-        f"It will lock after {config.lock_idle_timeout} s idle and pass-tui will",
+        "pass-tui: no bw login found and no API key in the environment "
+        f"(set BW_CLIENTID/BW_CLIENTSECRET, see {_API_KEY_URL}).",
     )
-    _say(stream, f"ask for the code (see {_LOCK_URL}). Ctrl-c to skip.")
-    try:
-        code = prompt_lock()
-    except AuthAborted:
-        log("session lock setup skipped")
-        return
-    try:
-        client.create_lock(code, config.lock_idle_timeout)
-    except PassCliError as exc:
-        # PAT sessions and other unsupported setups refuse locks; the
-        # session still works, so this is informational only.
-        log(f"session lock setup failed (skipped): {exc}")
-        return
-    log(f"session lock created (idle timeout {config.lock_idle_timeout} s)")
+    email = prompt_email()
+    while True:
+        password = prompt_password()
+        try:
+            client.login(email, password)
+        except WrongPasswordError:
+            _say(stream, "pass-tui: wrong master password, try again.")
+            log("wrong master password at login")
+            continue
+        except BwError as exc:
+            _say(stream, f"pass-tui: login failed: {exc}")
+            log(f"login failed: {exc}")
+            return False
+        if client.session_state() != SESSION_UNLOCKED:
+            _say(
+                stream,
+                "pass-tui: login did not unlock the vault "
+                "(2FA/SSO accounts: log in with `bw login` first, then start pass-tui).",
+            )
+            log("login succeeded but vault not unlocked")
+            return False
+        log("logged in and vault unlocked")
+        return True

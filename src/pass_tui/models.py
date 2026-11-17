@@ -4,12 +4,6 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
-class Vault:
-    share_id: str
-    name: str
-
-
-@dataclass(frozen=True)
 class ItemRef:
     share_id: str
     item_id: str
@@ -20,11 +14,10 @@ class ItemRef:
     item_uuid: str = ""
     folder: str = ""
     # Non-sensitive copyable fields (label -> value) captured at cache
-    # rebuild time from pass-cli's --show-secrets listing. Only fields
-    # whose values are not secrets (usernames, emails, urls, notes,
-    # Text/Timestamp extra fields, ...) are stored here; secret values
-    # are always fetched live. Absent for entries written by older
-    # cache versions.
+    # rebuild time from `bw list items`. Only fields whose values are not
+    # secrets (usernames, emails, urls, notes, Text extra fields, ...) are
+    # stored here; secret values are always fetched live. Absent for
+    # entries written by older cache versions.
     safe_fields: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict:

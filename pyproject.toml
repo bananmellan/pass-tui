@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pass-tui"
 version = "2.0.0"
-description = "Fast and secure terminal TUI for Proton Pass (pass-cli)"
+description = "Fast and secure terminal TUI for Bitwarden (bw CLI)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

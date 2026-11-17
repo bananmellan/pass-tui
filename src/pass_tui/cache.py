@@ -10,10 +10,10 @@ from urllib.parse import urlsplit
 
 from .dedup import dedup_refs
 from .models import ItemRef
-from .passcli import PassCli, PassCliError
+from .bitwarden import BwCli, BwError
 
-CACHE_VERSION = 3
-CACHE_NAME = "items.v3.json"
+CACHE_VERSION = 4
+CACHE_NAME = "items.v4.json"
 
 _ALLOWED_KEYS = {
     "share_id",
@@ -208,7 +208,7 @@ def match_host(refs: list[ItemRef], host: str) -> list[ItemRef]:
 
 
 class Cache:
-    def __init__(self, path: Path, client: PassCli, ttl: int = 600) -> None:
+    def __init__(self, path: Path, client: BwCli, ttl: int = 600) -> None:
         self.path = path
         self.client = client
         self.ttl = ttl
@@ -227,7 +227,7 @@ class Cache:
 
     def rebuild(self) -> tuple[list[ItemRef], int]:
         """Rebuild the cache. Returns (items, raw_count) where raw_count is
-        the number of item entries pass-cli returned before dedup."""
+        the number of item entries bw returned before dedup."""
         refs, raw_count = self.client.list_all_items()
         dump_cache(refs, self.path)
         return refs, raw_count
@@ -241,7 +241,7 @@ class Cache:
         if age is not None and age > self.ttl:
             try:
                 refs, _raw = self.rebuild()
-            except PassCliError:
+            except BwError:
                 pass
         return refs
 
@@ -266,7 +266,7 @@ class Cache:
     def refresh_locked(self) -> tuple[list[ItemRef], int]:
         try:
             refs, raw_count = self.client.list_all_items()
-        except PassCliError:
+        except BwError:
             return self.load(), 0
         dump_cache(refs, self.path)
         try:

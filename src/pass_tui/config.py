@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+# Default Bitwarden cloud region (EU). Override with PASS_TUI_BW_SERVER
+# (e.g. https://vault.bitwarden.com or a self-hosted URL).
+DEFAULT_BW_SERVER = "https://bitwarden.eu"
+
 
 def _env(env, new_key: str, legacy_key: str, default: str | None = None) -> str | None:
     value = env.get(new_key)
@@ -16,20 +20,13 @@ def _env(env, new_key: str, legacy_key: str, default: str | None = None) -> str 
 
 @dataclass(frozen=True)
 class Config:
-    pass_cli_bin: str = "pass-cli"
+    bw_bin: str = "bw"
+    bw_server: str = DEFAULT_BW_SERVER
     cache_dir: str = ""
     cache_ttl: int = 600
     reopen_seconds: int = 20
-    lock_seconds: int = 300
     debug: bool = False
     verbose: bool = False
-    # Session persistence/locking. Defaults keep a pass-cli account
-    # session usable across reboots (D-Bus Secret Service instead of the
-    # reboot-wiped kernel keyring) and PIN-protected after 10 minutes
-    # idle. Both are opt-out; PAT sessions cannot have a lock, so the
-    # lock setup is skipped silently for them.
-    keyring_backend: str = "dbus"  # "dbus", "kernel" or "off"
-    lock_idle_timeout: int = 600  # seconds; 0 disables the session lock
 
     @classmethod
     def from_env(cls, env) -> "Config":
@@ -43,19 +40,13 @@ class Config:
             if not os.path.isdir(cache_dir) and os.path.isdir(legacy):
                 cache_dir = legacy
         return cls(
-            pass_cli_bin=_env(env, "PASS_TUI_PASS_CLI", "PASS_ROFI_PASS_CLI", "pass-cli"),
+            bw_bin=_env(env, "PASS_TUI_BW_BIN", "PASS_TUI_PASS_CLI", "bw"),
+            bw_server=_env(env, "PASS_TUI_BW_SERVER", "", DEFAULT_BW_SERVER) or DEFAULT_BW_SERVER,
             cache_dir=cache_dir,
             cache_ttl=int(_env(env, "PASS_TUI_CACHE_TTL", "PASS_ROFI_CACHE_TTL", "600")),
             reopen_seconds=int(
                 _env(env, "PASS_TUI_REOPEN_SECONDS", "PASS_ROFI_REOPEN_SECONDS", "20")
             ),
-            lock_seconds=int(_env(env, "PASS_TUI_LOCK_SECONDS", "", "300")),
             debug=_env(env, "PASS_TUI_DEBUG", "PASS_ROFI_DEBUG", "") == "1",
             verbose=_env(env, "PASS_TUI_VERBOSE", "PASS_ROFI_VERBOSE", "") == "1",
-            keyring_backend=(
-                _env(env, "PASS_TUI_KEYRING_BACKEND", "", "dbus") or "dbus"
-            ).lower(),
-            lock_idle_timeout=int(
-                _env(env, "PASS_TUI_LOCK_IDLE_TIMEOUT", "", "600")
-            ),
         )

@@ -13,7 +13,7 @@ def test_dedup_refs_drops_exact_duplicates():
 
 def test_dedup_refs_dedups_same_item_id_across_shares():
     """The same item visible through two shares (same item_id, different
-    share_id) is one item — Proton Pass item ids are globally unique."""
+    share_id) is one item — bw item ids are unique."""
     refs = [
         ref("s1", "i1", "GitHub", ("https://github.com",)),
         ref("s2", "i1", "GitHub", ("https://github.com",)),
@@ -34,7 +34,7 @@ def test_dedup_refs_keeps_same_title_with_different_item_ids_and_no_uuid():
 
 
 def test_dedup_refs_dedups_same_item_uuid_with_different_item_ids():
-    """pass-cli can hand out different item_ids for the same item (re-import,
+    """bw can hand out different ids for the same item (re-import,
     sync conflict) while the content-level item_uuid stays stable. Same
     item_uuid = same item, even with different item_ids."""
     refs = [

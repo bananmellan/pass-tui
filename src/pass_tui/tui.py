@@ -339,7 +339,7 @@ def _draw_list(stdscr, app: App) -> None:
     app._clamp(screen, list_height)
 
     stdscr.erase()
-    header = "Proton Pass"
+    header = "Bitwarden"
     if screen.host_filter:
         header += f"  ({screen.host_filter})"
     _put_centered(stdscr, 0, _truncate(header, width - 1), curses.A_BOLD)
@@ -635,7 +635,7 @@ def _draw(stdscr, app: App) -> None:
         _draw_list(stdscr, app)
 
 
-# Keys that may trigger a slow pass-cli call; while one runs, the busy
+# Keys that may trigger a slow bw call; while one runs, the busy
 # indicator is shown immediately (before the handler returns).
 _BUSY_PREVIEW = {
     "ctrl_r": "Reloading items\u2026",
@@ -693,18 +693,19 @@ def _loop(stdscr, app: App) -> None:
 class Splash:
     """Boot screen shown while the auth gate and initial load run.
 
-    The UI comes up before any pass-cli call so a slow session probe
+    The UI comes up before any bw call so a slow session probe
     never leaves a blank terminal: the splash draws a title, a status
     line ("Checking session…", "Loading items…", gate messages)
-    and, when the gate asks for input, a prompt line. Prompts (lock
-    code, access token, lock setup) read hidden input here — the
-    typed text is never drawn. Esc/Ctrl-c at a prompt aborts it.
+    and, when the gate asks for input, a prompt line. Secret prompts
+    (master password) read hidden input here — the typed text is never
+    drawn. Esc/Ctrl-c at a prompt aborts it.
     """
 
     def __init__(self, stdscr) -> None:
         self._stdscr = stdscr
         self.status = "Starting…"
         self._prompt_label = ""
+        self._prompt_hidden = True
         self._input = ""
         stdscr.keypad(True)
 
@@ -717,15 +718,19 @@ class Splash:
     def redraw(self) -> None:
         self._redraw()
 
-    def prompt(self, label: str = "") -> str:
-        """Prompt for hidden input on the splash's prompt line.
+    def prompt(self, label: str = "", hidden: bool = True) -> str:
+        """Prompt for input on the splash's prompt line.
 
-        Echo is disabled; the typed text is never drawn. Backspace
-        edits, Enter accepts. Raises AuthAborted on Esc/Ctrl-c/EOF.
+        With ``hidden=True`` (default, for secrets) echo is disabled and
+        the typed text is never drawn — one bullet per character. With
+        ``hidden=False`` the text is drawn as typed (for non-secrets like
+        the account email). Backspace edits, Enter accepts. Raises
+        AuthAborted on Esc/Ctrl-c/EOF.
         """
         from .auth import AuthAborted
 
         self._prompt_label = label
+        self._prompt_hidden = hidden
         self._input = ""
         curses.curs_set(1)
         self._redraw()
@@ -762,7 +767,7 @@ class Splash:
         stdscr = self._stdscr
         _height, width = stdscr.getmaxyx()
         stdscr.erase()
-        _put_centered(stdscr, 0, "Proton Pass", curses.A_BOLD)
+        _put_centered(stdscr, 0, "Bitwarden", curses.A_BOLD)
         status_x = _put_centered(stdscr, 1, _truncate(self.status, width - 1),
                                 _pair(_PAIR_PROMPT))
         if self._prompt_label:
@@ -785,7 +790,8 @@ class Splash:
         """
         stdscr = self._stdscr
         label = _truncate(self._prompt_label, width - 6)
-        bullets = "●" * len(self._input)
+        typed = "●" * len(self._input) if self._prompt_hidden else self._input
+        bullets = typed
         inner_w = max(len(label), 2 + len(bullets)) + 2  # padding
         box_w = inner_w + 2  # borders
         avail = width - 1
@@ -811,9 +817,9 @@ class Splash:
 def run_splash(stdscr, config, client):
     """Boot the app behind a splash screen, inside a curses session.
 
-    Brings up the splash, probes the pass-cli session in a worker
+    Brings up the splash, probes the bw session in a worker
     thread (Esc/Ctrl-c during the probe cancels the boot), runs the
-    auth gate (lock-code / access-token prompts render on the splash),
+    auth gate (email / master-password prompts render on the splash),
     builds the App and runs its non-blocking launch flow, then returns
     (True, app). The caller continues with the main event loop on the
     same stdscr.
@@ -826,8 +832,8 @@ def run_splash(stdscr, config, client):
     import threading
 
     from . import cli as _cli
-    from .auth import AuthAborted, ensure_authenticated, setup_session_locks
-    from .passcli import SESSION_LOGGED_OUT
+    from .auth import AuthAborted, ensure_authenticated
+    from .bitwarden import SESSION_LOGGED_OUT
 
     _init_colors()
     curses.curs_set(0)
@@ -838,7 +844,7 @@ def run_splash(stdscr, config, client):
             splash.note(message)
 
     # Probe the session in a worker thread so the splash stays live
-    # while pass-cli answers: Esc/Ctrl-c during the probe cancels.
+    # while bw answers: Esc/Ctrl-c during the probe cancels.
     splash.note("Checking session…")
     probe: dict = {"state": None}
     probe_done = threading.Event()
@@ -868,8 +874,8 @@ def run_splash(stdscr, config, client):
         authenticated = ensure_authenticated(
             client,
             state=probe["state"],
-            prompt_token=lambda: splash.prompt("Personal access token (input hidden): "),
-            prompt_lock=lambda: splash.prompt("Lock code (input hidden): "),
+            prompt_email=lambda: splash.prompt("Bitwarden account email: ", hidden=False),
+            prompt_password=lambda: splash.prompt("Master password (input hidden): "),
             stream=splash.note,
             log=gate_log,
         )
@@ -878,13 +884,6 @@ def run_splash(stdscr, config, client):
     if not authenticated:
         return False, None
     splash.note("Loading items…")
-    setup_session_locks(
-        client,
-        config,
-        prompt_lock=lambda: splash.prompt("New lock code (input hidden): "),
-        stream=splash.note,
-        log=gate_log,
-    )
 
     app = _cli.build_app(config, client=client)
     # The launch flow is non-blocking: it renders from the cache and

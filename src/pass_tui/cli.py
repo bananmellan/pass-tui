@@ -8,10 +8,10 @@ import time
 from pathlib import Path
 
 from .app import App
+from .bitwarden import BwCli, BwError
 from .cache import CACHE_NAME, Cache
 from .clipboard import Clipboard
 from .config import Config
-from .passcli import PassCli, PassCliError
 from .state import StateStore
 
 
@@ -52,12 +52,12 @@ def _spawn_rebuild(config: Config) -> None:
 
 def build_app(
     config: Config,
-    client: PassCli | None = None,
+    client: BwCli | None = None,
     clipboard: Clipboard | None = None,
 ) -> App:
     cache_dir = Path(config.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    client = client or PassCli(config.pass_cli_bin)
+    client = client or BwCli(config.bw_bin, server=config.bw_server)
     cache = Cache(cache_dir / CACHE_NAME, client, ttl=config.cache_ttl)
     state = StateStore(cache_dir)
     clipboard = clipboard or Clipboard(
@@ -87,15 +87,15 @@ def run_tui(config: Config | None = None, env=None) -> int:
         )
         return 2
     cache_dir = Path(config.cache_dir)
-    if config.keyring_backend == "dbus" and "PROTON_PASS_LINUX_KEYRING" not in os.environ:
-        # Default: keep the session across reboots by storing pass-cli's
-        # encryption key in the desktop Secret Service instead of the
-        # kernel keyring (wiped on reboot). Applies to this process and
-        # every pass-cli child it spawns. Opt out with
-        # PASS_TUI_KEYRING_BACKEND=kernel (or set PROTON_PASS_LINUX_KEYRING
-        # yourself).
-        os.environ["PROTON_PASS_LINUX_KEYRING"] = "dbus"
-    client = PassCli(config.pass_cli_bin)
+    client = BwCli(config.bw_bin, server=config.bw_server)
+    try:
+        # Point bw at the configured server (bitwarden.eu by default)
+        # before any credentials are involved; refuse to continue if the
+        # region cannot be confirmed.
+        client.ensure_server()
+    except BwError as exc:
+        print(f"pass-tui: {exc}", file=sys.stderr)
+        return 2
 
     def boot(stdscr):
         # One curses session for splash + main loop: wrapper tears the
@@ -123,7 +123,12 @@ def run_rebuild(config: Config | None = None, env=None) -> int:
     config = config or Config.from_env(env or os.environ)
     cache_dir = Path(config.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache = Cache(cache_dir / CACHE_NAME, PassCli(config.pass_cli_bin), ttl=config.cache_ttl)
+    client = BwCli(config.bw_bin, server=config.bw_server)
+    try:
+        client.ensure_server()
+    except BwError as exc:
+        _verbose(config, cache_dir, f"rebuild: server setup failed: {exc}")
+    cache = Cache(cache_dir / CACHE_NAME, client, ttl=config.cache_ttl)
     _verbose(config, cache_dir, "rebuild: start")
     try:
         refs, raw_count = cache.rebuild()
@@ -134,7 +139,7 @@ def run_rebuild(config: Config | None = None, env=None) -> int:
             f"rebuild: ok, {len(refs)} unique items from {raw_count} raw entries, "
             f"{with_urls} with urls",
         )
-    except PassCliError as exc:
+    except BwError as exc:
         _verbose(config, cache_dir, f"rebuild failed: {exc}")
         _debug_log(cache_dir, f"background rebuild failed: {exc}")
     try:
@@ -147,7 +152,7 @@ def run_rebuild(config: Config | None = None, env=None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pass-tui",
-        description="Terminal TUI for Proton Pass (pass-cli).",
+        description="Terminal TUI for Bitwarden (bw CLI; bitwarden.eu by default).",
     )
     parser.add_argument("--rebuild", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(

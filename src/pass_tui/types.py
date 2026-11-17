@@ -1,16 +1,10 @@
 """Item-type badges for the list.
 
-pass-cli serializes `ItemContent` (proton-pass-types) as an externally
-tagged enum: `content.content = {"Login": {...}}`, `{"Note": {...}}`,
-`{"Alias": {...}}`, `{"CreditCard": {...}}`, `{"Identity": {...}}`,
-`{"SshKey": {...}}`, `{"Wifi": {...}}`, `{"Custom": {...}}`. The summary
-form (`item list` without --show-secrets) carries a snake_case
-`item_type` field with the same names. Our cache stores whichever we
-saw; both shapes normalize to the canonical names below.
-
-Aliases are hide-my-email addresses: their title IS the address, so
-they are badged "alias" (not "login") to tell them apart from logins
-that happen to be titled with an email address.
+The Bitwarden CLI reports items with a numeric `type` enum
+(1=login, 2=secure note, 3=card, 4=identity); the backend maps it to the
+canonical names below (see bitwarden._TYPE_NAMES). Older cache entries
+may carry other spellings; everything normalizes to the canonical
+lowercase names here.
 """
 
 from __future__ import annotations
@@ -46,7 +40,7 @@ _TYPE_EMOJIS = {
 
 
 def normalize_item_type(item_type: str) -> str:
-    """Map any pass-cli spelling to a canonical lowercase type name."""
+    """Map any stored spelling to a canonical lowercase type name."""
     key = item_type.strip().lower().replace("-", "_").replace(" ", "_")
     if key in _TYPE_BADGES:
         return key

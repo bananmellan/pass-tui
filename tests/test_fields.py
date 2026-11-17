@@ -81,7 +81,7 @@ def test_field_value_ignores_non_string_section_values():
 
 
 def test_field_labels_extra_fields_under_content():
-    """Current pass-cli puts extra_fields inside item.content, not top-level.
+    """The canonical view puts extra_fields inside item.content, not top-level.
     An item with only extra fields must still produce labels."""
     data = {
         "item": {
@@ -135,7 +135,7 @@ ALIAS_VIEW = {
                 "Alias": {
                     "alias_prefix": "actress_revolving098",
                     "alias_suffix": "smail.me",
-                    "mailboxes": [{"email": "me@proton.me", "name": "Main"}],
+                    "mailboxes": [{"email": "me@example.com", "name": "Main"}],
                     "enabled": True,
                     "block_reply": False,
                 }
@@ -210,7 +210,7 @@ def test_field_labels_login_with_email_field_still_shows_email():
 
 
 def test_alias_with_top_level_alias_email():
-    """Current pass-cli: AliasItem is a unit struct; the address is at
+    """Canonical view: the alias address is at
     top-level item.alias_email. This is the shape that produced
     "No readable fields in 'affection_thorn212@slmail.me'"."""
     data = {
@@ -815,7 +815,7 @@ def test_cached_view_roundtrip_alias():
     view = {
         "item": {
             "content": {
-                "title": "me+shopping@proton.me",
+                "title": "me+shopping@example.com",
                 "item_uuid": "uuid-1",
                 "content": {"Alias": {"mailbox_ids": ["mb1"], "custom_fields": [], "note": ""}},
                 "extra_fields": [],
@@ -824,13 +824,13 @@ def test_cached_view_roundtrip_alias():
     }
     safe = safe_fields_from_view(view)
     ref = ItemRef(
-        "s1", "i10", "me+shopping@proton.me", (), "Personal", "Alias",
+        "s1", "i10", "me+shopping@example.com", (), "Personal", "Alias",
         item_uuid="uuid-1",
         safe_fields=tuple(safe.items()),
     )
     restored = cached_view_from_ref(ref)
     assert field_labels(restored) == field_labels(view)
-    assert field_value(restored, "email: me+shopping@proton.me") == "me+shopping@proton.me"
+    assert field_value(restored, "email: me+shopping@example.com") == "me+shopping@example.com"
 
 
 def test_is_url_field():

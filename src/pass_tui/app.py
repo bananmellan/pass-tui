@@ -33,7 +33,7 @@ from .fields import (
     normalize_url,
 )
 from .models import ItemRef
-from .passcli import PassCli, PassCliError
+from .bitwarden import BwCli, BwError
 from .search import filter_items
 from .state import StateStore
 
@@ -141,7 +141,7 @@ class App:
         config: Config,
         cache: Cache,
         state: StateStore,
-        client: PassCli,
+        client: BwCli,
         clipboard: Clipboard,
         now: Callable[[], float] = time.time,
         log: Callable[[str], None] | None = None,
@@ -245,7 +245,7 @@ class App:
         rebuild time via --show-secrets), so opening is instant. The
         sensitive-field inventory (labels only, never values) is known
         from the same capture; copying a sensitive field fetches the
-        value live from pass-cli.
+        value live from bw.
 
         The current list screen is saved so that going back (esc from
         the field view) restores the search query and selection.
@@ -256,11 +256,11 @@ class App:
         if data is not None:
             self._log(f"opened {ref.title!r} from cache ({len(ref.safe_fields)} fields)")
         else:
-            self._log(f"no cached fields for {ref.title!r}, fetching from pass-cli")
+            self._log(f"no cached fields for {ref.title!r}, fetching from bw")
             self._set_busy(f"Loading {ref.title}…")
             try:
                 data = self.client.view_item_with_retry(ref)
-            except PassCliError as exc:
+            except BwError as exc:
                 self._log(f"view failed for {ref.title!r}: {exc}")
                 return self._refresh_list(message=f"Could not open {ref.title!r}")
             finally:
@@ -295,7 +295,7 @@ class App:
         """Copy a field's value to the clipboard.
 
         Non-sensitive values come from the cache (instant). Sensitive
-        values (hidden fields, TOTP) are fetched live from pass-cli —
+        values (hidden fields, TOTP) are fetched live from bw —
         they are never cached. Returns the label on success, "" on
         failure.
         """
@@ -307,18 +307,18 @@ class App:
             self._set_busy("Generating TOTP code…")
             try:
                 value = self.client.totp(ref)
-            except PassCliError as exc:
+            except BwError as exc:
                 self._log(f"totp failed: {exc}")
                 return ""
             finally:
                 self._clear_busy()
         elif label in hidden_field_labels(self._item_view):
-            # Sensitive field: fetch the live value from pass-cli.
+            # Sensitive field: fetch the live value from bw.
             # The cache holds the label inventory but never the value.
             self._set_busy(f"Fetching {label}…")
             try:
                 fresh = self.client.view_item(ref)
-            except PassCliError as exc:
+            except BwError as exc:
                 self._log(f"live fetch failed for {label!r}: {exc}")
                 return ""
             finally:
@@ -340,7 +340,7 @@ class App:
         """Open a url field in the browser instead of copying it.
 
         Url fields never hold secrets, so the value comes straight from
-        the cached view — no live pass-cli fetch. Returns True when a
+        the cached view — no live bw fetch. Returns True when a
         browser was launched.
         """
         screen = self.screen
@@ -438,7 +438,7 @@ class App:
                     f"background rebuild: {len(refs)} unique items from {raw_count} raw entries"
                 )
                 self._bg_result = refs
-            except PassCliError as exc:
+            except BwError as exc:
                 self._log(f"background rebuild failed: {exc}")
             finally:
                 self._bg_done.set()
@@ -639,7 +639,7 @@ class App:
             refs, raw_count = self.cache.rebuild()
             self._log(f"refresh: {len(refs)} unique items from {raw_count} raw entries")
             return self._apply_fresh_refs(refs)
-        except PassCliError as exc:
+        except BwError as exc:
             self._log(f"refresh failed: {exc}")
             screen = self.screen
             if isinstance(screen, ListScreen):

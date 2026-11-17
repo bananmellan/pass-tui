@@ -421,7 +421,7 @@ def test_draw_list_shows_items_and_prompt(tmp_path):
     win = StubWindow()
     tui._draw_list(win, app)
     text = win.text()
-    assert "Proton Pass" in text
+    assert "Bitwarden" in text
     assert "> login" in win.row(1)
     assert "GitHub" in text
     assert "Bank" in text
@@ -529,13 +529,13 @@ def test_draw_list_shows_type_badges(tmp_path):
 
 
 def test_draw_list_centers_title(tmp_path):
-    """The "Proton Pass" header is centered on row 0."""
+    """The "Bitwarden" header is centered on row 0."""
     app = make_app(tmp_path, refs=[ref()])
     app.start()
     win = StubWindow(height=24, width=80)
     tui._draw_list(win, app)
     full_row = win.row(0)
-    title = "Proton Pass"
+    title = "Bitwarden"
     idx = full_row.index(title)
     leading = idx
     trailing = 80 - (idx + len(title))
@@ -1002,7 +1002,7 @@ from pass_tui.app import App
 from pass_tui.cache import Cache, CACHE_NAME
 from pass_tui.clipboard import Clipboard
 from pass_tui.config import Config
-from pass_tui.passcli import PassCli
+from pass_tui.bitwarden import BwCli
 from pass_tui.state import StateStore
 from pass_tui.tui import run
 from pathlib import Path
@@ -1010,7 +1010,7 @@ import json
 
 config = Config.from_env(__import__("os").environ)
 cache_dir = Path(config.cache_dir)
-client = PassCli("pass-cli", runner=lambda argv: json.dumps({"vaults": []}))
+client = BwCli("bw", runner=lambda argv: "[]")
 cache = Cache(cache_dir / CACHE_NAME, client, ttl=config.cache_ttl)
 state = StateStore(cache_dir)
 

@@ -4,7 +4,7 @@ import time
 from pass_tui.cache import CACHE_NAME, Cache, cache_age, dump_cache, load_cache, match_host, sort_refs
 from pass_tui.dedup import dedup_refs
 from pass_tui.models import ItemRef
-from pass_tui.passcli import PassCli, PassCliError
+from pass_tui.bitwarden import BwCli, BwError
 
 
 def ref(share="s1", item="i1", title="GitHub", urls=("https://github.com",), vault="Personal"):
@@ -12,29 +12,48 @@ def ref(share="s1", item="i1", title="GitHub", urls=("https://github.com",), vau
 
 
 def make_client(items=None, fail=False):
+    """BwCli with a scripted runner covering the argv routes
+    list_all_items issues: `bw sync`, `bw list items|folders|
+    organizations`. Items carry a real password so the
+    never-cache-secrets test is meaningful."""
     def runner(argv):
-        if argv[1:3] == ["vault", "list"]:
-            return json.dumps({"vaults": [{"share_id": "s1", "name": "Personal"}]})
-        if argv[1:4] == ["item", "list", "--share-id"]:
+        route = tuple(argv[1:])
+        if route == ("sync",):
+            return ""
+        if route == ("list", "items"):
             if fail:
-                raise PassCliError("offline")
-            payload = {
-                "items": [
+                raise BwError("offline")
+            return json.dumps(
+                [
                     {
+                        "object": "item",
                         "id": i.item_id,
-                        "share_id": i.share_id,
-                        "content": {
-                            "title": i.title,
-                            "content": {"Login": {"urls": list(i.urls)}},
+                        "organizationId": None,
+                        "folderId": None,
+                        "type": {"Login": 1, "Note": 2, "CreditCard": 3, "Identity": 4}.get(
+                            i.item_type, 1
+                        ),
+                        "name": i.title,
+                        "notes": "",
+                        "login": {
+                            "uris": [{"uri": u} for u in i.urls],
+                            "username": "user-" + i.item_id,
+                            "password": "s3cret-" + i.item_id,
+                            "totp": None,
                         },
+                        "fields": [],
+                        "deletedDate": None,
                     }
                     for i in (items or [])
                 ]
-            }
-            return json.dumps(payload)
-        raise PassCliError(f"unexpected {argv}")
+            )
+        if route == ("list", "folders"):
+            return "[]"
+        if route == ("list", "organizations"):
+            return "[]"
+        raise BwError(f"unexpected {argv}")
 
-    return PassCli("pass-cli", runner=runner)
+    return BwCli("bw", runner=runner)
 
 
 def test_roundtrip(tmp_path):
@@ -63,7 +82,7 @@ def test_dedup_refs_drops_same_identity_keeps_first(tmp_path):
 
 def test_dedup_refs_dedups_same_item_id_across_shares(tmp_path):
     """The same item visible through two shares (same item_id, different
-    share_id) is one item — Proton Pass item ids are globally unique."""
+    share_id) is one item — bw item ids are unique."""
     refs = [
         ref("s1", "i1", "GitHub", ("https://github.com",)),
         ref("s2", "i1", "GitHub", ("https://github.com",)),
@@ -110,7 +129,7 @@ def test_load_cache_dedups_stale_file(tmp_path):
     deduped on load so the list never shows the same item twice."""
     path = tmp_path / CACHE_NAME
     payload = {
-        "version": 3,
+        "version": 4,
         "created_at": 0,
         "items": [
             ref("s1", "i1", "GitHub", ("https://github.com",)).to_dict(),
@@ -159,23 +178,29 @@ def test_cache_file_is_not_world_readable(tmp_path):
 
 
 def test_cache_contains_no_secrets(tmp_path):
+    """bw list items returns decrypted items including real passwords;
+    the cache must keep only non-sensitive values. Hidden-field labels
+    survive with empty values (so the menu can list them censored), but
+    no secret value is ever written."""
     path = tmp_path / CACHE_NAME
     client = make_client([ref()])
     cache = Cache(path, client)
     cache.rebuild()
     raw = path.read_text()
-    assert "password" not in raw
-    assert "secret" not in raw
+    assert "s3cret" not in raw
     data = json.loads(raw)
     assert set(data) == {"version", "created_at", "items"}
+    safe = data["items"][0]["safe_fields"]
+    assert safe["password"] == ""  # label kept, value dropped
+    assert safe["username"] == "user-i1"
 
 
 def test_load_cache_dedups_by_item_uuid(tmp_path):
     """Two cache entries with the same item_uuid but different item_ids
-    (pass-cli handed out a new item_id for the same item) collapse to one."""
+    (bw re-issued the id for the same item) collapse to one."""
     path = tmp_path / CACHE_NAME
     payload = {
-        "version": 3,
+        "version": 4,
         "created_at": 0,
         "items": [
             {
@@ -218,7 +243,7 @@ def test_cache_allows_item_uuid_key(tmp_path):
     path.write_text(
         json.dumps(
             {
-                "version": 3,
+                "version": 4,
                 "items": [
                     {
                         "share_id": "s1",
@@ -243,7 +268,7 @@ def test_load_rejects_foreign_keys(tmp_path):
     path.write_text(
         json.dumps(
             {
-                "version": 3,
+                "version": 4,
                 "items": [
                     {
                         "share_id": "s1",
@@ -434,7 +459,7 @@ def test_match_host_deterministic_order():
 
 def test_cache_roundtrip_preserves_safe_fields(tmp_path):
     """Non-sensitive field values survive dump+load so the app can
-    open items without a pass-cli call; hidden labels survive with
+    open items without a bw call; hidden labels survive with
     empty values (secrets are never cached)."""
     path = tmp_path / CACHE_NAME
     rich = ItemRef(
@@ -461,7 +486,7 @@ def test_load_cache_tolerates_entry_without_safe_fields(tmp_path):
     inside the current version) load with empty safe_fields."""
     path = tmp_path / CACHE_NAME
     payload = {
-        "version": 3,
+        "version": 4,
         "created_at": 0,
         "items": [
             {
@@ -495,7 +520,7 @@ def test_load_cache_keeps_folder_key(tmp_path):
     path.write_text(
         json.dumps(
             {
-                "version": 3,
+                "version": 4,
                 "items": [
                     {
                         "share_id": "s1",
@@ -522,7 +547,7 @@ def test_load_cache_defaults_folder_to_empty(tmp_path):
     path.write_text(
         json.dumps(
             {
-                "version": 3,
+                "version": 4,
                 "items": [
                     {
                         "share_id": "s1",

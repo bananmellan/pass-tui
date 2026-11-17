@@ -8,20 +8,11 @@ from .models import ItemRef
 def dedup_refs(refs: list[ItemRef]) -> list[ItemRef]:
     """Drop duplicate items, keeping first occurrence.
 
-    Primary identity is the item_id: Proton Pass item ids are globally
-    unique, and the same item can be visible through several shares
-    (owned vault + a share), in which case pass-cli returns it once per
-    share with the same item_id but a different share_id.
+    Primary identity is the item_id: Bitwarden item ids are globally
+    unique.
 
-    But item_id is not the whole story: pass-cli has been observed to
-    hand out different item_ids for what is clearly the same item (e.g.
-    after a re-import or a sync conflict), while the content-level
-    item_uuid stays stable. So when an entry carries an item_uuid, that
-    is the stronger identity and wins over item_id. Two entries with the
-    same non-empty item_uuid are the same item, even if their item_ids
-    differ — keeping both is what produced visually identical rows where
-    only one of them could actually be opened (the other item_id was
-    stale and pass-cli item view failed for it).
+    The cache stores item_uuid = item_id for bw, so identity is the
+    item id; the uuid-first rule below is kept for older cache entries.
 
     Entries without an item_uuid fall back to item_id. A stale cache
     file written by an older version must not produce duplicate rows
