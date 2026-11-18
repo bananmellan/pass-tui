@@ -287,6 +287,38 @@ def test_ensure_server_refuses_wrong_region():
         client.ensure_server()
 
 
+def test_ensure_server_logged_in_on_other_region_refuses_without_config_call():
+    """bw refuses `config server` while a session is active; pass-tui must
+    not even attempt the switch and must tell the user to `bw logout` first
+    (or point PASS_TUI_BW_SERVER at the current region)."""
+    for state in ("unlocked", "locked"):
+        seen = []
+        client = make_client(
+            {("status",): json.dumps({"serverUrl": "https://bitwarden.com", "status": state})},
+            seen=seen,
+        )
+        with pytest.raises(BwError, match="bw logout"):
+            client.ensure_server()
+        # Only the status probe ran - no `config server` call.
+        assert [a[1:] for a in seen] == [["status"]]
+
+
+def test_ensure_server_wraps_config_failure():
+    """If `bw config server` itself fails while logged out, the raw bw
+    error is wrapped with the target server for context."""
+
+    def runner(argv):
+        if argv[1:] == ["status"]:
+            return json.dumps({"serverUrl": "https://bitwarden.com", "status": "unauthenticated"})
+        if argv[1:4] == ["config", "server", "https://bitwarden.eu"]:
+            raise BwError("Logout required before server config update.")
+        raise BwError(f"unexpected {argv}")
+
+    client = BwCli("bw", runner=runner)
+    with pytest.raises(BwError, match=r"could not point bw at https://bitwarden\.eu"):
+        client.ensure_server()
+
+
 def test_ensure_server_custom_url():
     seen = []
     responses = iter(

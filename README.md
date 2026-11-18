@@ -80,7 +80,10 @@ run it from a terminal.
   automatically on startup (`bw config server`; override with
   `PASS_TUI_BW_SERVER`, e.g. `https://vault.bitwarden.com` or a self-hosted
   URL) and refuses to send any credential if the configured region cannot be
-  confirmed.
+  confirmed. bw refuses server changes while a session is active, so if bw is
+  already logged in on a different region, pass-tui exits with a hint: run
+  `bw logout` first and start pass-tui again (it will configure the server
+  and log you in), or set `PASS_TUI_BW_SERVER` to the region bw is on.
 - `wl-copy`/`wl-paste`, `xclip` or `xsel` for clipboard integration
 - A terminal with curses support
 

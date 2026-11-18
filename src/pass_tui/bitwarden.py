@@ -370,6 +370,13 @@ class BwCli:
         `bw config server <url>` persists the setting; we refuse to go
         on if the configured server is not the expected one, so the
         master password is never sent to the wrong region.
+
+        bw refuses `config server` while a login session is active
+        ("Logout required before server config update"), so when bw is
+        already logged in on a different region we fail with a clear
+        hint instead of attempting the switch: run `bw logout` first,
+        then start pass-tui again (it will configure the server and log
+        you in), or set PASS_TUI_BW_SERVER to the region bw is on.
         """
         url = url or self.server
         if not url:
@@ -378,9 +385,24 @@ class BwCli:
             data = self._exec_json([self.binary, "status"])
         except BwError:
             data = None
-        if isinstance(data, dict) and data.get("serverUrl") == url:
+        server_url = ""
+        status = ""
+        if isinstance(data, dict):
+            server_url = str(data.get("serverUrl") or "")
+            status = str(data.get("status") or "").lower()
+        if server_url == url:
             return
-        self._exec([self.binary, "config", "server", url])
+        if status in ("locked", "unlocked"):
+            raise BwError(
+                f"bw is logged in on {server_url or 'another server'} and cannot switch "
+                f"to {url} (bw requires logout first). Run `bw logout`, then start "
+                f"pass-tui again; or set PASS_TUI_BW_SERVER={server_url} "
+                f"to use that region."
+            )
+        try:
+            self._exec([self.binary, "config", "server", url])
+        except BwError as exc:
+            raise BwError(f"could not point bw at {url}: {exc}") from exc
         data = self._exec_json([self.binary, "status"])
         if not (isinstance(data, dict) and data.get("serverUrl") == url):
             raise BwError(f"bw is not configured for server {url}")
